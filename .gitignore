@@ -1,0 +1,14 @@
+# Runtime state
+state/
+workspaces/
+
+# Generated packages
+dist/
+
+# Local/editor files
+.vscode/
+.idea/
+*.user
+*.log
+Thumbs.db
+Desktop.ini

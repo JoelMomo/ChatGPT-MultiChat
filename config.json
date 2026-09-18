@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 2,
+  "maxSlots": 8,
+  "refreshSeconds": 1,
+  "abandonedAfterMinutes": 3,
+  "cleanExpireMinutes": 10,
+  "dirtyExpireMinutes": 20,
+  "portRangeStart": 3000,
+  "portRangeCount": 100,
+  "gitRefreshSeconds": 5,
+  "historyLimit": 50,
+  "resourceRules": [
+    {
+      "name": "adb-thor",
+      "pattern": "(^|[ ;|&])(adb|fastboot|scrcpy)(\\.exe)?\\b|gradlew.*(install|connectedandroidtest)|install.*\\.apk"
+    },
+    {
+      "name": "android-emulator",
+      "pattern": "(^|[ ;|&])emulator(\\.exe)?\\b|avdmanager|sdkmanager"
+    }
+  ]
+}
