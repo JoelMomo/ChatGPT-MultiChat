@@ -414,15 +414,29 @@ function Get-WorktreeCleanupCandidates {
         }
     }
 
+    $activeWorkspaces = @{}
+    foreach ($knownSession in @($Sessions)) {
+        if (-not $knownSession) { continue }
+        if (-not [bool](Get-ChatProp $knownSession 'active' $false)) { continue }
+        $activeWorkspace = [string](Get-ChatProp $knownSession 'workspace' '')
+        if ($activeWorkspace) { $activeWorkspaces[$activeWorkspace] = $true }
+    }
+
     $results = @()
     foreach ($session in @($Sessions)) {
         if (-not $session) { continue }
         if ([bool](Get-ChatProp $session 'active' $false)) { continue }
         if (-not [bool](Get-ChatProp $session 'isolated' $false)) { continue }
 
+        # A session can be marked ended just before its shell actually exits.
+        # Never auto-clean a worktree while that owner PID is still alive.
+        $ownerPid = [int](Get-ChatProp $session 'pid' 0)
+        if ($ownerPid -gt 0 -and (Test-ChatProcessAlive $ownerPid)) { continue }
+
         $workspace = [string](Get-ChatProp $session 'workspace' '')
         $originRepo = [string](Get-ChatProp $session 'originRepo' '')
         if (-not $workspace -or -not $originRepo) { continue }
+        if ($activeWorkspaces.ContainsKey($workspace)) { continue }
         if (-not (Test-Path -LiteralPath $workspace)) { continue }
 
         $results += Get-WorktreeCleanupCandidateState $session

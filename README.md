@@ -4,7 +4,7 @@ A portable Windows coordination layer for running **multiple ChatGPT chats throu
 
 ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Current version: **v2.1.0**
+> Current version: **v2.1.1**
 
 ## Why it exists
 
@@ -43,11 +43,19 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Activity classification such as `READY`, `BUILD`, `TEST`, `GIT`, `ADB`, `SERVER`, and `WAIT`.
 - Redesigned WinForms tray dashboard with a cleaner dark UI, metric cards, and improved table readability.
 - Short history of completed sessions.
-- Background safe-cleanup detection for finished worktrees.
+- Automatic background cleanup of finished worktrees that are verified `SAFE`, with manual cleanup retained as a fallback.
 - Recovery of abandoned sessions and dead owner processes.
 - Automatic hidden restart of Desktop Commander when it is no longer available.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+
+## What's new in v2.1.1
+
+- Fixed the minimize button hover state and centered its glyph.
+- Replaced unreliable form-level resizing with eight dedicated resize grips for edges and corners.
+- Clarified Git tooltips: for example, `23 new` now explains that those files are not tracked by Git.
+- Finished `SAFE` worktrees are cleaned automatically in the background instead of continuously accumulating.
+- Auto-clean skips worktrees whose owner process is still alive and keeps manual cleanup as a fallback.
 
 ## What's new in v2.1.0
 
@@ -162,17 +170,17 @@ If the process that owns a session disappears, MultiChat can release its slot, p
 
 ## Git worktrees
 
-MultiChat does **not** delete a worktree just because its chat ends.
+A finished worktree is considered safe to remove only when it has no uncommitted local changes, no untracked files, and no commits that still need to be integrated.
 
-A finished worktree is considered safe to remove only when it has no uncommitted local changes and no commits that still need to be integrated.
+By default, the dashboard automatically removes finished worktrees that pass those checks. It never auto-cleans a worktree while its owner PID is still alive. Worktrees that are dirty, contain untracked files, or have unmerged commits remain untouched.
 
-You can use:
+You can still use:
 
-- **Clean safe worktrees** in the dashboard. The button returns immediately while cleanup runs in the background;
+- **Clean safe worktrees** in the dashboard as a manual fallback;
 - `Cleanup-Worktrees.ps1` to inspect candidates;
-- `Cleanup-Worktrees.ps1 -Apply` to apply safe cleanup.
+- `Cleanup-Worktrees.ps1 -Apply` to apply safe cleanup manually.
 
-The dashboard scans for cleanup candidates periodically in the background. When cleanup is requested, the cached safe candidates are passed to the worker and revalidated immediately before deletion.
+The dashboard rescans periodically in the background and reports only the candidates that remain after automatic cleanup.
 
 ## Shared-resource locks
 
@@ -205,6 +213,7 @@ The main settings live in `config.json`:
 | `maintenanceRefreshSeconds` | 15 | Background Git, expiry, liveness, and Desktop Commander maintenance interval |
 | `historyRefreshSeconds` | 5 | Recent-history refresh interval |
 | `cleanupScanSeconds` | 30 | Background worktree-scan interval |
+| `autoCleanSafeWorktrees` | true | Automatically remove finished worktrees that pass all SAFE checks |
 | `abandonedAfterMinutes` | 3 | Time before a READY session is marked abandoned |
 | `cleanExpireMinutes` | 10 | Expiry for clean idle sessions |
 | `dirtyExpireMinutes` | 20 | Expiry for idle sessions with local changes |

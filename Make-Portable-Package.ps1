@@ -1,4 +1,4 @@
-param([string]$Version='2.1.0')
+param([string]$Version='2.1.1')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $dist=Join-Path $root 'dist'

@@ -84,9 +84,24 @@ try{
     }
     $testForm=New-Object Windows.Forms.Form
     $testForm.FormBorderStyle='None'
+    $testForm.Size=New-Object Drawing.Size(900,560)
+    $testForm.BackColor=$script:UiColors.Bg
     if($testForm.FormBorderStyle -ne 'None'){
         $errors+='Borderless window mode is unavailable'
     }
+    Add-WindowResizeGrips -Form $testForm -Grip 6
+    $resizeGrips=@($testForm.Controls|Where-Object{$_.Name -like 'ResizeGrip*'})
+    if($resizeGrips.Count -ne 8){
+        $errors+="Expected 8 resize grips, found $($resizeGrips.Count)"
+    }
+    $windowButton=New-WindowButton -Text ([char]0x2212)
+    if($windowButton.FlatAppearance.MouseOverBackColor -eq $windowButton.BackColor){
+        $errors+='Window button hover state is not distinct'
+    }
+    if($gitView.ToolTip -notmatch 'not tracked by Git'){
+        $errors+="Unexpected Git tooltip: $($gitView.ToolTip)"
+    }
+    $windowButton.Dispose()
     $testForm.Dispose()
 
     $cleanupBase=Join-Path $root 'state\selftest-cleanup'
@@ -102,6 +117,29 @@ try{
         & git -C $repo add probe.txt
         & git -C $repo commit -qm 'probe'
         & git -C $repo worktree add -q -b cleanup-probe $worktree HEAD
+
+        $liveSession=[pscustomobject]@{
+            id='selftest-live';project='selftest';workspace=$worktree
+            originRepo=$repo;branch='cleanup-probe';active=$false
+            isolated=$true;pid=$PID
+        }
+        if(@(Get-WorktreeCleanupCandidates -Sessions @($liveSession)).Count -ne 0){
+            $errors+='Cleanup candidates included a worktree whose owner PID is still alive'
+        }
+
+        $staleSession=[pscustomobject]@{
+            id='selftest-stale';project='selftest';workspace=$worktree
+            originRepo=$repo;branch='cleanup-probe';active=$false
+            isolated=$true;pid=999999
+        }
+        $replacementSession=[pscustomobject]@{
+            id='selftest-replacement';project='selftest';workspace=$worktree
+            originRepo=$repo;branch='cleanup-probe';active=$true
+            isolated=$false;pid=$PID
+        }
+        if(@(Get-WorktreeCleanupCandidates -Sessions @($staleSession,$replacementSession)).Count -ne 0){
+            $errors+='Cleanup candidates included a workspace currently referenced by another active session'
+        }
 
         $candidate=[pscustomobject]@{
             id='selftest';project='selftest';workspace=$worktree

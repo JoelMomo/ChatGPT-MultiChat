@@ -119,6 +119,7 @@ function Start-WorktreeScan {
     $result=Join-Path $stateCacheRoot 'worktree-scan.json'
     Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
     $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-ResultFile',$result,'-Quiet')
+    if([bool](Get-ChatProp $cfg 'autoCleanSafeWorktrees' $true)){$args+='-AutoCleanSafe'}
     $script:cleanupScanResultFile=$result
     $script:cleanupScanProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
     $script:lastCleanupScanStart=Get-Date
@@ -369,7 +370,6 @@ $form.ForeColor=$script:UiColors.Text
 $form.Font=New-Object Drawing.Font('Segoe UI',9)
 $form.Padding=New-Object Windows.Forms.Padding(18)
 Enable-ControlDoubleBuffer $form
-Enable-WindowResize -Form $form
 
 $header=New-Object Windows.Forms.Panel
 $header.Dock='Top'
@@ -410,21 +410,11 @@ $windowControls.BackColor=$script:UiColors.Bg
 $windowControls.Padding=New-Object Windows.Forms.Padding(4,0,0,0)
 $header.Controls.Add($windowControls)
 
-$minimizeButton=New-FlatButton -Text ([char]0x2013) -Width 34
-$minimizeButton.Height=30
-$minimizeButton.FlatAppearance.BorderSize=0
-$minimizeButton.BackColor=$script:UiColors.Bg
-$minimizeButton.Margin=New-Object Windows.Forms.Padding(0)
+$minimizeButton=New-WindowButton -Text ([char]0x2212)
 $minimizeButton.Add_Click({$form.WindowState='Minimized'})
 $windowControls.Controls.Add($minimizeButton)
 
-$closeButton=New-FlatButton -Text ([char]0x00D7) -Width 34
-$closeButton.Height=30
-$closeButton.FlatAppearance.BorderSize=0
-$closeButton.BackColor=$script:UiColors.Bg
-$closeButton.Margin=New-Object Windows.Forms.Padding(0)
-$closeButton.Add_MouseEnter({$this.BackColor=[Drawing.Color]::FromArgb(155,55,55)})
-$closeButton.Add_MouseLeave({$this.BackColor=$script:UiColors.Bg})
+$closeButton=New-WindowButton -Text ([char]0x00D7) -CloseButton
 $closeButton.Add_Click({$form.Close()})
 $windowControls.Controls.Add($closeButton)
 
@@ -552,6 +542,9 @@ $historyBox.BorderStyle='None'
 $historyBox.Font=New-Object Drawing.Font('Consolas',8.5)
 $split.Panel2.Controls.Add($historyBox)
 $historyBox.BringToFront()
+
+# Dedicated edge/corner controls make borderless resizing reliable even when child controls fill the window.
+Add-WindowResizeGrips -Form $form -Grip 6
 
 $notify=New-Object Windows.Forms.NotifyIcon
 $notify.Icon=[Drawing.SystemIcons]::Application

@@ -191,7 +191,7 @@ function Format-GitSummary {
 
     $tipParts = @()
     if ($modified -gt 0) { $tipParts += "$modified tracked file(s) changed" }
-    if ($untracked -gt 0) { $tipParts += "$untracked untracked file(s)" }
+    if ($untracked -gt 0) { $tipParts += "$untracked new file(s) not tracked by Git" }
     if ($ahead -gt 0) { $tipParts += "$ahead commit(s) ahead" }
     if ($behind -gt 0) { $tipParts += "$behind commit(s) behind" }
 
@@ -310,41 +310,90 @@ function Show-MultiChatInfo {
 }
 
 
-function Enable-WindowResize {
+function New-WindowButton {
     param(
-        [Parameter(Mandatory)]$Form,
-        [int]$Grip = 8
+        [Parameter(Mandatory)][string]$Text,
+        [switch]$CloseButton
     )
 
-    $Form.Add_MouseDown({
-        param($sender,$eventArgs)
-        if ($eventArgs.Button -ne [Windows.Forms.MouseButtons]::Left -or $Form.WindowState -ne 'Normal') {
-            return
-        }
+    $button=New-Object Windows.Forms.Button
+    $button.Text=$Text
+    $button.Width=34
+    $button.Height=30
+    $button.FlatStyle='Flat'
+    $button.FlatAppearance.BorderSize=0
+    $button.UseVisualStyleBackColor=$false
+    $button.BackColor=$script:UiColors.Bg
+    $button.ForeColor=$script:UiColors.Text
+    $button.Font=New-Object Drawing.Font('Segoe UI Symbol',11,[Drawing.FontStyle]::Regular)
+    $button.TextAlign='MiddleCenter'
+    $button.Margin=New-Object Windows.Forms.Padding(0)
+    $button.TabStop=$false
+    $button.Cursor=[Windows.Forms.Cursors]::Hand
 
-        $x=$eventArgs.X
-        $y=$eventArgs.Y
+    $normal=$script:UiColors.Bg
+    $hover=if($CloseButton){[Drawing.Color]::FromArgb(155,55,55)}else{$script:UiColors.Surface3}
+    $pressed=if($CloseButton){[Drawing.Color]::FromArgb(185,65,65)}else{$script:UiColors.Surface2}
+    $button.FlatAppearance.MouseOverBackColor=$hover
+    $button.FlatAppearance.MouseDownBackColor=$pressed
+    $button.Add_MouseEnter({$this.BackColor=$hover}.GetNewClosure())
+    $button.Add_MouseLeave({$this.BackColor=$normal}.GetNewClosure())
+    return $button
+}
+
+function Add-WindowResizeGrips {
+    param(
+        [Parameter(Mandatory)]$Form,
+        [int]$Grip=6
+    )
+
+    $definitions=@(
+        @{Name='Left';   Hit=10; Cursor='SizeWE'},
+        @{Name='Right';  Hit=11; Cursor='SizeWE'},
+        @{Name='Top';    Hit=12; Cursor='SizeNS'},
+        @{Name='Bottom'; Hit=15; Cursor='SizeNS'},
+        @{Name='TL';     Hit=13; Cursor='SizeNWSE'},
+        @{Name='TR';     Hit=14; Cursor='SizeNESW'},
+        @{Name='BL';     Hit=16; Cursor='SizeNESW'},
+        @{Name='BR';     Hit=17; Cursor='SizeNWSE'}
+    )
+
+    $grips=@{}
+    foreach($definition in $definitions){
+        $panel=New-Object Windows.Forms.Panel
+        $panel.Name='ResizeGrip'+$definition.Name
+        $panel.BackColor=$Form.BackColor
+        $panel.Cursor=[Windows.Forms.Cursors]::$($definition.Cursor)
+        $panel.Tag=[int]$definition.Hit
+        $panel.Add_MouseDown({
+            param($sender,$eventArgs)
+            if($eventArgs.Button -eq [Windows.Forms.MouseButtons]::Left -and $Form.WindowState -eq 'Normal'){
+                [MultiChatNativeWindow]::ReleaseCapture()|Out-Null
+                [MultiChatNativeWindow]::SendMessage($Form.Handle,0x00A1,[int]$sender.Tag,0)|Out-Null
+            }
+        }.GetNewClosure())
+        $Form.Controls.Add($panel)
+        $grips[$definition.Name]=$panel
+    }
+
+    $layout={
         $w=$Form.ClientSize.Width
         $h=$Form.ClientSize.Height
+        $corner=$Grip*2
 
-        $left=($x -le $Grip)
-        $right=($x -ge ($w-$Grip))
-        $top=($y -le $Grip)
-        $bottom=($y -ge ($h-$Grip))
-        $hit=0
+        $grips.Left.SetBounds(0,$corner,$Grip,[Math]::Max(0,$h-($corner*2)))
+        $grips.Right.SetBounds([Math]::Max(0,$w-$Grip),$corner,$Grip,[Math]::Max(0,$h-($corner*2)))
+        $grips.Top.SetBounds($corner,0,[Math]::Max(0,$w-($corner*2)),$Grip)
+        $grips.Bottom.SetBounds($corner,[Math]::Max(0,$h-$Grip),[Math]::Max(0,$w-($corner*2)),$Grip)
 
-        if($left -and $top){$hit=13}
-        elseif($right -and $top){$hit=14}
-        elseif($left -and $bottom){$hit=16}
-        elseif($right -and $bottom){$hit=17}
-        elseif($left){$hit=10}
-        elseif($right){$hit=11}
-        elseif($top){$hit=12}
-        elseif($bottom){$hit=15}
+        $grips.TL.SetBounds(0,0,$corner,$corner)
+        $grips.TR.SetBounds([Math]::Max(0,$w-$corner),0,$corner,$corner)
+        $grips.BL.SetBounds(0,[Math]::Max(0,$h-$corner),$corner,$corner)
+        $grips.BR.SetBounds([Math]::Max(0,$w-$corner),[Math]::Max(0,$h-$corner),$corner,$corner)
 
-        if($hit -ne 0){
-            [MultiChatNativeWindow]::ReleaseCapture()|Out-Null
-            [MultiChatNativeWindow]::SendMessage($Form.Handle,0x00A1,$hit,0)|Out-Null
-        }
-    }.GetNewClosure())
+        foreach($grip in $grips.Values){$grip.BringToFront()}
+    }.GetNewClosure()
+
+    $Form.Add_Resize($layout)
+    & $layout
 }

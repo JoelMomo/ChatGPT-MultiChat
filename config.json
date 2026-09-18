@@ -5,6 +5,7 @@
   "maintenanceRefreshSeconds": 15,
   "historyRefreshSeconds": 5,
   "cleanupScanSeconds": 30,
+  "autoCleanSafeWorktrees": true,
   "abandonedAfterMinutes": 3,
   "cleanExpireMinutes": 10,
   "dirtyExpireMinutes": 20,

@@ -1,5 +1,6 @@
 param(
     [switch]$Apply,
+    [switch]$AutoCleanSafe,
     [string]$CandidatesFile,
     [string]$ResultFile,
     [switch]$Quiet
@@ -42,18 +43,26 @@ if (-not $Quiet) {
 }
 
 $removed = @()
-if ($Apply -and $safe.Count) {
+$applyCleanup = ($Apply -or $AutoCleanSafe)
+if ($applyCleanup -and $safe.Count) {
     $removed = @(Invoke-SafeWorktreeCleanup -Candidates $safe)
     if (-not $Quiet) {
         Write-Host ''
         Write-Host ("Safely removed: " + $removed.Count) -ForegroundColor Green
     }
-} elseif (-not $Apply -and -not $Quiet -and $items.Count) {
+
+    if($AutoCleanSafe){
+        # Return the state after automatic cleanup, not the stale pre-cleanup candidate list.
+        $items = @(Get-WorktreeCleanupCandidates)
+        $safe = @($items | Where-Object { [bool](Get-ChatProp $_ 'safe' $false) })
+        $pending = @($items | Where-Object { -not [bool](Get-ChatProp $_ 'safe' $false) })
+    }
+} elseif (-not $applyCleanup -and -not $Quiet -and $items.Count) {
     Write-Host ''
     Write-Host 'Use -Apply to remove ONLY the entries marked SAFE.' -ForegroundColor DarkGray
 }
 
-$failedCount = if($Apply){[Math]::Max(0,$safe.Count-$removed.Count)}else{0}
+$failedCount = if($applyCleanup -and -not $AutoCleanSafe){[Math]::Max(0,$safe.Count-$removed.Count)}else{0}
 
 $result = [ordered]@{
     scannedAt = (Get-Date).ToString('o')
@@ -62,6 +71,7 @@ $result = [ordered]@{
     pendingCount = $pending.Count
     removedCount = $removed.Count
     failedCount = $failedCount
+    autoClean = [bool]$AutoCleanSafe
     items = @($items | ForEach-Object {
         [ordered]@{
             id = [string](Get-ChatProp $_ 'id' '')
