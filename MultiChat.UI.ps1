@@ -308,3 +308,43 @@ function Show-MultiChatInfo {
         $dialog.Dispose()
     }
 }
+
+
+function Enable-WindowResize {
+    param(
+        [Parameter(Mandatory)]$Form,
+        [int]$Grip = 8
+    )
+
+    $Form.Add_MouseDown({
+        param($sender,$eventArgs)
+        if ($eventArgs.Button -ne [Windows.Forms.MouseButtons]::Left -or $Form.WindowState -ne 'Normal') {
+            return
+        }
+
+        $x=$eventArgs.X
+        $y=$eventArgs.Y
+        $w=$Form.ClientSize.Width
+        $h=$Form.ClientSize.Height
+
+        $left=($x -le $Grip)
+        $right=($x -ge ($w-$Grip))
+        $top=($y -le $Grip)
+        $bottom=($y -ge ($h-$Grip))
+        $hit=0
+
+        if($left -and $top){$hit=13}
+        elseif($right -and $top){$hit=14}
+        elseif($left -and $bottom){$hit=16}
+        elseif($right -and $bottom){$hit=17}
+        elseif($left){$hit=10}
+        elseif($right){$hit=11}
+        elseif($top){$hit=12}
+        elseif($bottom){$hit=15}
+
+        if($hit -ne 0){
+            [MultiChatNativeWindow]::ReleaseCapture()|Out-Null
+            [MultiChatNativeWindow]::SendMessage($Form.Handle,0x00A1,$hit,0)|Out-Null
+        }
+    }.GetNewClosure())
+}

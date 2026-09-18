@@ -369,6 +369,7 @@ $form.ForeColor=$script:UiColors.Text
 $form.Font=New-Object Drawing.Font('Segoe UI',9)
 $form.Padding=New-Object Windows.Forms.Padding(18)
 Enable-ControlDoubleBuffer $form
+Enable-WindowResize -Form $form
 
 $header=New-Object Windows.Forms.Panel
 $header.Dock='Top'
