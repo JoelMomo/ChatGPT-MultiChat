@@ -103,7 +103,7 @@ function Set-DesktopCommanderEnabled {
 
 function Restart-RemoteCommander {
     $script:suppressConnectionToggle=$true
-    if($connectionToggle){$connectionToggle.Checked=$true}
+    if($connectionToggle){Set-ToggleSwitchChecked -Toggle $connectionToggle -Checked $true}
     $script:suppressConnectionToggle=$false
     Set-DesktopCommanderEnabled -Enabled $true -ForceRestart
 }
@@ -415,9 +415,9 @@ function Refresh-Dashboard {
     $connectionLabel.ForeColor=$dcColor
     Set-StatusLed -Led $connectionLed -Color $dcColor
 
-    if($connectionToggle.Checked -ne $script:dcDesiredOnline){
+    if((Get-ToggleSwitchChecked -Toggle $connectionToggle) -ne $script:dcDesiredOnline){
         $script:suppressConnectionToggle=$true
-        $connectionToggle.Checked=$script:dcDesiredOnline
+        Set-ToggleSwitchChecked -Toggle $connectionToggle -Checked $script:dcDesiredOnline
         $script:suppressConnectionToggle=$false
     }
 
@@ -505,9 +505,11 @@ $closeButton.Location=New-Object Drawing.Point(40,0)
 $closeButton.Add_Click({$form.Close()})
 $windowControls.Controls.Add($closeButton)
 
-$connectionToggle.Add_CheckedChanged({
+$connectionToggle.Add_Click({
     if($script:suppressConnectionToggle){return}
-    Set-DesktopCommanderEnabled -Enabled ([bool]$connectionToggle.Checked)
+    $next=-not (Get-ToggleSwitchChecked -Toggle $connectionToggle)
+    Set-ToggleSwitchChecked -Toggle $connectionToggle -Checked $next
+    Set-DesktopCommanderEnabled -Enabled $next
     Refresh-Dashboard
 })
 

@@ -428,34 +428,30 @@ function Set-StatusLed {
 function New-ToggleSwitch {
     param([bool]$Checked=$true)
 
-    $toggle=New-Object Windows.Forms.CheckBox
-    $toggle.Appearance='Button'
-    $toggle.AutoSize=$false
+    $toggle=New-Object Windows.Forms.Panel
     $toggle.Size=New-Object Drawing.Size(44,22)
-    $toggle.FlatStyle='Flat'
-    $toggle.FlatAppearance.BorderSize=0
-    $toggle.Text=''
-    $toggle.Checked=$Checked
+    $toggle.BackColor=$script:UiColors.Bg
     $toggle.Cursor=[Windows.Forms.Cursors]::Hand
+    $toggle.Tag=[bool]$Checked
     $toggle.TabStop=$false
-    $toggle.UseVisualStyleBackColor=$false
 
     $toggle.Add_Paint({
         param($sender,$e)
         $e.Graphics.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $track=if($sender.Checked){$script:UiColors.Good}else{$script:UiColors.Surface3}
+        $isChecked=[bool]$sender.Tag
+        $track=if($isChecked){$script:UiColors.Good}else{$script:UiColors.Surface3}
         $trackBrush=New-Object Drawing.SolidBrush($track)
         $knobBrush=New-Object Drawing.SolidBrush($script:UiColors.Text)
-
         try{
-            $h=$sender.Height-2
-            $r=[int]($h/2)
-            $e.Graphics.FillRectangle($trackBrush,$r,1,$sender.Width-($r*2),$h)
-            $e.Graphics.FillEllipse($trackBrush,1,1,$h,$h)
-            $e.Graphics.FillEllipse($trackBrush,$sender.Width-$h-1,1,$h,$h)
+            $trackHeight=18
+            $trackY=2
+            $radius=[int]($trackHeight/2)
+            $e.Graphics.FillRectangle($trackBrush,$radius,$trackY,$sender.Width-($radius*2),$trackHeight)
+            $e.Graphics.FillEllipse($trackBrush,2,$trackY,$trackHeight,$trackHeight)
+            $e.Graphics.FillEllipse($trackBrush,$sender.Width-$trackHeight-2,$trackY,$trackHeight,$trackHeight)
 
-            $knob=16
-            $x=if($sender.Checked){$sender.Width-$knob-4}else{4}
+            $knob=14
+            $x=if($isChecked){$sender.Width-$knob-5}else{5}
             $y=[int](($sender.Height-$knob)/2)
             $e.Graphics.FillEllipse($knobBrush,$x,$y,$knob,$knob)
         }finally{
@@ -463,6 +459,19 @@ function New-ToggleSwitch {
             $knobBrush.Dispose()
         }
     })
-    $toggle.Add_CheckedChanged({$this.Invalidate()})
     return $toggle
+}
+
+function Get-ToggleSwitchChecked {
+    param([Parameter(Mandatory)]$Toggle)
+    return [bool]$Toggle.Tag
+}
+
+function Set-ToggleSwitchChecked {
+    param(
+        [Parameter(Mandatory)]$Toggle,
+        [Parameter(Mandatory)][bool]$Checked
+    )
+    $Toggle.Tag=$Checked
+    $Toggle.Invalidate()
 }

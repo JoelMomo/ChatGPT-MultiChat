@@ -6,7 +6,7 @@ $script:SessionRoot = Join-Path $script:StateRoot 'sessions'
 $script:LockRoot = Join-Path $script:StateRoot 'locks'
 $script:SlotRoot = Join-Path $script:StateRoot 'slots'
 $script:WorkspaceRoot = Join-Path $script:ManagerRoot 'workspaces'
-$script:AutoResourceLock = $null
+$script:AutoResourceLocks = @()
 
 function Initialize-ChatMulti {
     foreach ($p in @($script:SessionRoot,$script:LockRoot,$script:SlotRoot,$script:WorkspaceRoot)) {
@@ -83,12 +83,24 @@ function Get-ManagedChatSessions {
         if (-not $SkipLivenessCheck) {
             $alive = Test-ChatProcessAlive ([int](Get-ChatProp $s 'pid' 0))
             if ([bool](Get-ChatProp $s 'active' $false) -and -not $alive) {
-                $s.active = $false
-                $s.status = 'STALE'
-                $s.updatedAt = (Get-Date).ToString('o')
-                Release-SessionReservations $s
-                Write-ChatHistory $s 'PROCESS_GONE'
-                Write-ChatJson $file.FullName $s
+                $protected=$false
+                if (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue) {
+                    $protected=Test-SessionProtectedByLease $s
+                }
+
+                if ($protected) {
+                    $s.active = $true
+                    $s.status = 'LEASED_EXTERNAL'
+                    $s | Add-Member -NotePropertyName shellAlive -NotePropertyValue $false -Force
+                    Write-ChatJson $file.FullName $s
+                } else {
+                    $s.active = $false
+                    $s.status = 'STALE'
+                    $s.updatedAt = (Get-Date).ToString('o')
+                    Release-SessionReservations $s | Out-Null
+                    Write-ChatHistory $s 'PROCESS_GONE'
+                    Write-ChatJson $file.FullName $s
+                }
             }
         }
 
@@ -101,13 +113,20 @@ function Get-ManagedChatSessions {
 
 function Expire-IdleManagedChatSessions {
     [CmdletBinding()]
-    param([int]$IdleMinutes = 0)
+    param(
+        [int]$IdleMinutes = 0,
+        [string[]]$SessionId=@()
+    )
 
     Initialize-ChatMulti
     $now = Get-Date
     $expired = @()
 
     foreach ($s in @(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck)) {
+        if ($SessionId.Count -and [string](Get-ChatProp $s 'id' '') -notin $SessionId) { continue }
+        if (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue) {
+            if (Test-SessionProtectedByLease $s) { continue }
+        }
         if ([string](Get-ChatProp $s 'status' '') -ne 'READY') { continue }
 
         $idle = Get-SessionIdleInfo $s
@@ -143,7 +162,15 @@ function Claim-ChatSlot([string]$SessionId) {
         $slotFile = Join-Path $script:SlotRoot ("slot-{0}.json" -f $slot)
         if (Test-Path $slotFile) {
             $old = Read-ChatJson $slotFile
-            if ($old -and (Test-ChatProcessAlive ([int]$old.pid))) { continue }
+            if ($old -and (Test-ChatProcessAlive ([int](Get-ChatProp $old 'pid' 0)))) { continue }
+
+            $oldSession=$null
+            $oldSessionId=[string](Get-ChatProp $old 'sessionId' '')
+            if ($oldSessionId) {$oldSession=Get-ManagedChatSession -Id $oldSessionId}
+            if ($oldSession -and (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue)) {
+                if (Test-SessionProtectedByLease $oldSession) { continue }
+            }
+
             Remove-Item $slotFile -Force -ErrorAction SilentlyContinue
         }
         try {
@@ -195,26 +222,97 @@ function Set-ManagedChatWindowTitle {
     $branch = if ($State.branch) { " | $($State.branch)" } else { '' }
     try { $Host.UI.RawUI.WindowTitle = "$emoji CHAT-$($State.slot) | $($State.project)$branch | $($State.status)" } catch {}
 }
-function Acquire-ChatResource {
+function Get-ChatResourceLock {
     param([Parameter(Mandatory)][string]$Resource)
+    $name = ($Resource -replace '[^a-zA-Z0-9._-]','_').ToLowerInvariant()
+    $path = Join-Path $script:LockRoot "$name.json"
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    return Read-ChatJson $path
+}
+
+function Acquire-ChatResource {
+    param(
+        [Parameter(Mandatory)][string]$Resource,
+        [string]$SessionId=$env:CHATGPT_SESSION_ID,
+        [string]$LeaseId=''
+    )
     Initialize-ChatMulti
-    $s = Get-ManagedChatSession
-    if ($null -eq $s) { throw 'This PowerShell is not a managed ChatGPT session.' }
+    if (-not $SessionId) { throw 'This operation requires a managed ChatGPT session.' }
+    $s = Get-ManagedChatSession -Id $SessionId
+    if ($null -eq $s) { throw "Managed session '$SessionId' was not found." }
     $name = ($Resource -replace '[^a-zA-Z0-9._-]','_').ToLowerInvariant()
     $path = Join-Path $script:LockRoot "$name.json"
 
+    if (Get-Command Test-ChatResourceIdentityConflict -ErrorAction SilentlyContinue) {
+        foreach($lockFile in Get-ChildItem -LiteralPath $script:LockRoot -Filter '*.json' -File -ErrorAction SilentlyContinue){
+            $existing=Read-ChatJson $lockFile.FullName
+            if (-not $existing) {
+                Remove-Item $lockFile.FullName -Force -ErrorAction SilentlyContinue
+                continue
+            }
+
+            $existingResource=[string](Get-ChatProp $existing 'resource' '')
+            if (-not $existingResource -or -not (Test-ChatResourceIdentityConflict -Requested $Resource -Existing $existingResource)) {
+                continue
+            }
+
+            $existingSessionId=[string](Get-ChatProp $existing 'sessionId' '')
+            if ($existingSessionId -eq $s.id) { continue }
+
+            $existingAlive=Test-ChatProcessAlive ([int](Get-ChatProp $existing 'pid' 0))
+            $existingProtected=$false
+            if ($existingSessionId) {
+                $existingSession=Get-ManagedChatSession -Id $existingSessionId
+                if ($existingSession) {$existingProtected=Test-SessionProtectedByLease $existingSession}
+            }
+
+            if ($existingAlive -or $existingProtected) {
+                Write-Host ("Resource '{0}' conflicts with '{1}' held by CHAT-{2} ({3})." -f $Resource,$existingResource,(Get-ChatProp $existing 'slot' '?'),(Get-ChatProp $existing 'project' 'unknown')) -ForegroundColor Red
+                return $false
+            }
+
+            Remove-Item $lockFile.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     if (Test-Path $path) {
         $old = Read-ChatJson $path
-        if ($old -and $old.sessionId -eq $s.id) { return $true }
-        if ($old -and (Test-ChatProcessAlive ([int]$old.pid))) {
-            Write-Host ("Resource '{0}' is in use by CHAT-{1} ({2})." -f $Resource,$old.slot,$old.project) -ForegroundColor Red
+        if ($old -and [string](Get-ChatProp $old 'sessionId' '') -eq $s.id) {
+            $oldLease=[string](Get-ChatProp $old 'leaseId' '')
+            if ($LeaseId -and $oldLease -ne $LeaseId) {
+                Write-Host ("Resource '{0}' is already held by this session under another owner." -f $Resource) -ForegroundColor Red
+                return $false
+            }
+            return $true
+        }
+
+        $oldAlive=$old -and (Test-ChatProcessAlive ([int](Get-ChatProp $old 'pid' 0)))
+        $oldProtected=$false
+        if ($old) {
+            $oldSessionId=[string](Get-ChatProp $old 'sessionId' '')
+            if ($oldSessionId -and (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue)) {
+                $oldSession=Get-ManagedChatSession -Id $oldSessionId
+                if ($oldSession) {$oldProtected=Test-SessionProtectedByLease $oldSession}
+            }
+        }
+
+        if ($oldAlive -or $oldProtected) {
+            Write-Host ("Resource '{0}' is in use by CHAT-{1} ({2})." -f $Resource,(Get-ChatProp $old 'slot' '?'),(Get-ChatProp $old 'project' 'unknown')) -ForegroundColor Red
             return $false
         }
         Remove-Item $path -Force -ErrorAction SilentlyContinue
     }
 
     try {
-        $payload = @{resource=$Resource;sessionId=$s.id;slot=$s.slot;project=$s.project;pid=$PID;claimedAt=(Get-Date).ToString('o')}
+        $payload = @{
+            resource=$Resource
+            sessionId=$s.id
+            slot=$s.slot
+            project=$s.project
+            pid=$PID
+            leaseId=$LeaseId
+            claimedAt=(Get-Date).ToString('o')
+        }
         $bytes = [Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress))
         $fs = [IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
         try { $fs.Write($bytes,0,$bytes.Length) } finally { $fs.Dispose() }
@@ -224,23 +322,45 @@ function Acquire-ChatResource {
         return $false
     }
 }
+
 function Release-ChatResource {
-    param([Parameter(Mandatory)][string]$Resource)
-    $s = Get-ManagedChatSession
-    if ($null -eq $s) { return }
+    param(
+        [Parameter(Mandatory)][string]$Resource,
+        [string]$SessionId=$env:CHATGPT_SESSION_ID,
+        [string]$LeaseId=''
+    )
+    if (-not $SessionId) { return }
     $name = ($Resource -replace '[^a-zA-Z0-9._-]','_').ToLowerInvariant()
     $path = Join-Path $script:LockRoot "$name.json"
     $lock = Read-ChatJson $path
-    if ($lock -and $lock.sessionId -eq $s.id) {
-        Remove-Item $path -Force -ErrorAction SilentlyContinue
-    }
+    if (-not $lock) { return }
+    if ([string](Get-ChatProp $lock 'sessionId' '') -ne $SessionId) { return }
+
+    $lockLease=[string](Get-ChatProp $lock 'leaseId' '')
+    if ($LeaseId -and $lockLease -ne $LeaseId) { return }
+    if (-not $LeaseId -and $lockLease) { return }
+
+    Remove-Item $path -Force -ErrorAction SilentlyContinue
 }
 
 function Get-ChatResourceLocks {
     Initialize-ChatMulti
     foreach ($file in Get-ChildItem -LiteralPath $script:LockRoot -Filter '*.json' -File -ErrorAction SilentlyContinue) {
         $l = Read-ChatJson $file.FullName
-        if ($l -and (Test-ChatProcessAlive ([int]$l.pid))) { $l }
+        if (-not $l) {
+            Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue
+            continue
+        }
+
+        $alive=Test-ChatProcessAlive ([int](Get-ChatProp $l 'pid' 0))
+        $protected=$false
+        $ownerId=[string](Get-ChatProp $l 'sessionId' '')
+        if ($ownerId -and (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue)) {
+            $owner=Get-ManagedChatSession -Id $ownerId
+            if ($owner) {$protected=Test-SessionProtectedByLease $owner}
+        }
+
+        if ($alive -or $protected) { $l }
         else { Remove-Item $file.FullName -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -250,9 +370,11 @@ function Install-ManagedChatPrompt {
 
     function global:prompt {
         try {
-            if ($script:AutoResourceLock) {
-                Release-ChatResource -Resource $script:AutoResourceLock
-                $script:AutoResourceLock = $null
+            if ($script:AutoResourceLocks.Count) {
+                foreach($resource in @($script:AutoResourceLocks)){
+                    Release-ChatResource -Resource $resource
+                }
+                $script:AutoResourceLocks=@()
             }
             Set-ManagedChatState -Status 'READY'
             $s = Get-ManagedChatSession
@@ -275,14 +397,19 @@ function Install-ManagedChatPrompt {
             [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line,[ref]$cursor)
             $status = Resolve-ChatCommandStatus $line
 
-            if ($status -eq 'ADB') {
-                if (-not (Acquire-ChatResource -Resource 'adb-thor')) {
+            $resources=@(Get-ConfiguredResourceNames -Line $line)
+            $acquired=@()
+            foreach($resource in $resources){
+                if (Acquire-ChatResource -Resource $resource) {
+                    $acquired+=$resource
+                } else {
+                    foreach($held in $acquired){Release-ChatResource -Resource $held}
                     Write-Host ''
-                    Write-Host 'ADB command blocked to avoid a collision with another session.' -ForegroundColor Red
+                    Write-Host ("Command blocked: resource '{0}' is already in use." -f $resource) -ForegroundColor Red
                     return
                 }
-                $script:AutoResourceLock = 'adb-thor'
             }
+            $script:AutoResourceLocks=$acquired
             Set-ManagedChatState -Status $status -LastCommand $line
             [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
         }
@@ -295,83 +422,166 @@ function New-ManagedChatSession {
     param(
         [string]$ProjectPath,
         [string]$Task = 'work',
-        [switch]$NoWorktree
+        [switch]$NoWorktree,
+        [string]$BaseRef,
+        [string]$BaseSha,
+        [string]$CanonicalRef
     )
+
     Initialize-ChatMulti
-    $id = 'session-' + [guid]::NewGuid().ToString('N').Substring(0,12)
-    $slot = Claim-ChatSlot $id
-    $emoji = Get-ChatEmoji $slot
-    $color = Get-ChatColor $slot
+    Initialize-HardeningState
 
-    $workspace = $script:ManagerRoot
-    $project = 'General'
-    $originRepo = $null
-    $branch = $null
-    $isolated = $false
+    $id='session-'+[guid]::NewGuid().ToString('N').Substring(0,12)
+    $slot=Claim-ChatSlot $id
+    $emoji=Get-ChatEmoji $slot
+    $color=Get-ChatColor $slot
 
-    if (-not $ProjectPath) {
-        $ProjectPath = Resolve-ChatProjectPath -Task $Task -CurrentPath (Get-Location).Path
-    }
+    $workspace=$script:ManagerRoot
+    $project='General'
+    $originRepo=$null
+    $branch=$null
+    $isolated=$false
+    $devPort=$null
+    $baseInfo=$null
+    $canonicalShaAtStart=''
+    $createdWorktree=$false
 
-    if ($ProjectPath) {
-        $resolved = (Resolve-Path -LiteralPath $ProjectPath -ErrorAction Stop).Path
-        $workspace = $resolved
-        $project = Split-Path $resolved -Leaf
-        $repoRoot = $null
-        try { $repoRoot = (& git -C $resolved rev-parse --show-toplevel 2>$null | Select-Object -First 1) } catch {}
-        if ($repoRoot) {
-            $repoRoot = $repoRoot.Trim()
-            $originRepo = $repoRoot
-            $project = Split-Path $repoRoot -Leaf
-            Register-ChatProject -Path $repoRoot
-            if (-not $NoWorktree) {
-                $slug = ($Task.ToLowerInvariant() -replace '[^a-z0-9]+','-').Trim('-')
-                if (-not $slug) { $slug = 'work' }
-                if ($slug.Length -gt 28) { $slug = $slug.Substring(0,28).Trim('-') }
-                $branch = "chat/$slot/$slug-" + (Get-Date -Format 'HHmmss') + '-' + $id.Substring($id.Length-4)
-                $workspace = Join-Path (Join-Path $script:WorkspaceRoot $project) $id
-                New-Item -ItemType Directory -Path (Split-Path $workspace -Parent) -Force | Out-Null
-                & git -C $repoRoot worktree add -b $branch $workspace HEAD | Out-Null
-                if (-not (Test-Path -LiteralPath (Join-Path $workspace '.git'))) {
-                    Remove-Item (Join-Path $script:SlotRoot "slot-$slot.json") -Force -ErrorAction SilentlyContinue
-                    throw 'Could not create the isolated Git worktree.'
+    try {
+        if (-not $ProjectPath) {
+            $ProjectPath=Resolve-ChatProjectPath -Task $Task -CurrentPath (Get-Location).Path
+        }
+
+        if ($ProjectPath) {
+            $resolved=(Resolve-Path -LiteralPath $ProjectPath -ErrorAction Stop).Path
+            $workspace=$resolved
+            $project=Split-Path $resolved -Leaf
+
+            $repoOutput=@(& git -C $resolved rev-parse --show-toplevel 2>$null)
+            $repoExit=$LASTEXITCODE
+            $repoRoot=$repoOutput | Select-Object -First 1
+            if ($repoExit -eq 0 -and $repoRoot) {
+                $repoRoot=([string]$repoRoot).Trim()
+                $originRepo=$repoRoot
+                $project=Split-Path $repoRoot -Leaf
+                Register-ChatProject -Path $repoRoot
+
+                $baseInfo=Resolve-ExactGitBase -Repo $repoRoot -BaseRef $BaseRef -BaseSha $BaseSha
+                if ($CanonicalRef) {
+                    $canonicalShaAtStart=Resolve-ChatCanonicalRef -Repo $repoRoot -CanonicalRef $CanonicalRef
                 }
-                $isolated = $true
-            } else {
-                $branch = (& git -C $workspace branch --show-current 2>$null | Select-Object -First 1)
+
+                if (-not $NoWorktree) {
+                    $slug=($Task.ToLowerInvariant() -replace '[^a-z0-9]+','-').Trim('-')
+                    if (-not $slug) {$slug='work'}
+                    if ($slug.Length -gt 28) {$slug=$slug.Substring(0,28).Trim('-')}
+
+                    $branch="chat/$slot/$slug-"+(Get-Date -Format 'HHmmss')+'-'+$id.Substring($id.Length-4)
+                    $workspace=Join-Path (Join-Path $script:WorkspaceRoot $project) $id
+                    New-Item -ItemType Directory -Path (Split-Path $workspace -Parent) -Force | Out-Null
+
+                    & git -C $repoRoot worktree add -b $branch $workspace $baseInfo.BaseSha | Out-Null
+                    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $workspace '.git'))) {
+                        throw 'Could not create the isolated Git worktree from the requested base.'
+                    }
+                    $createdWorktree=$true
+                    $isolated=$true
+
+                    $headCheck=Invoke-ChatGitCapture -Repo $workspace -Arguments @('rev-parse','HEAD^{commit}')
+                    if ($headCheck.ExitCode -ne 0 -or -not $headCheck.First) {
+                        throw 'Could not verify the new worktree HEAD.'
+                    }
+                    $createdHead=([string]$headCheck.First).Trim().ToLowerInvariant()
+                    if ($createdHead -ne $baseInfo.BaseSha) {
+                        throw "Worktree base mismatch: created at $createdHead, expected $($baseInfo.BaseSha)."
+                    }
+                } else {
+                    $branchOutput=@(& git -C $workspace branch --show-current 2>$null)
+                    if ($LASTEXITCODE -eq 0) {$branch=($branchOutput | Select-Object -First 1)}
+                    if ($baseInfo.ExactRequested) {
+                        $headCheck=Invoke-ChatGitCapture -Repo $workspace -Arguments @('rev-parse','HEAD^{commit}')
+                        $currentHead=if($headCheck.First){([string]$headCheck.First).Trim().ToLowerInvariant()}else{''}
+                        if ($headCheck.ExitCode -ne 0 -or $currentHead -ne $baseInfo.BaseSha) {
+                            throw "NoWorktree exact-base mismatch: current HEAD is '$currentHead', expected '$($baseInfo.BaseSha)'."
+                        }
+                    }
+                }
+            } elseif ($BaseRef -or $BaseSha -or $CanonicalRef) {
+                throw 'BaseRef/BaseSha/CanonicalRef require ProjectPath to resolve to a Git repository.'
             }
         }
-    }
 
-    $devPort = Claim-ChatPort -SessionId $id -Slot $slot
+        $devPort=Claim-ChatPort -SessionId $id -Slot $slot
 
-    $env:CHATGPT_SESSION_ID = $id
-    $env:CHATGPT_SLOT = [string]$slot
-    $env:CHATGPT_PROJECT = $project
-    $env:CHATGPT_WORKSPACE = $workspace
-    if ($devPort) {
-        $env:CHATGPT_PORT = [string]$devPort
-        $env:PORT = [string]$devPort
+        $env:CHATGPT_SESSION_ID=$id
+        $env:CHATGPT_SLOT=[string]$slot
+        $env:CHATGPT_PROJECT=$project
+        $env:CHATGPT_WORKSPACE=$workspace
+        if ($baseInfo) {
+            $env:CHATGPT_BASE_REF=[string]$baseInfo.BaseRef
+            $env:CHATGPT_BASE_SHA=[string]$baseInfo.BaseSha
+        }
+        if ($CanonicalRef) {$env:CHATGPT_CANONICAL_REF=$CanonicalRef}
+        if ($devPort) {
+            $env:CHATGPT_PORT=[string]$devPort
+            $env:PORT=[string]$devPort
+        }
+
+        $state=[ordered]@{
+            schemaVersion=2
+            id=$id;slot=$slot;emoji=$emoji;color=$color;project=$project;task=$Task
+            workspace=$workspace;originRepo=$originRepo;branch=$branch;isolated=$isolated
+            baseRef=if($baseInfo){[string]$baseInfo.BaseRef}else{''}
+            baseSha=if($baseInfo){[string]$baseInfo.BaseSha}else{''}
+            exactBaseRequested=if($baseInfo){[bool]$baseInfo.ExactRequested}else{$false}
+            canonicalRef=[string]$CanonicalRef
+            canonicalShaAtStart=[string]$canonicalShaAtStart
+            pid=$PID;active=$true;shellAlive=$true;status='READY';lastCommand=''
+            devPort=$devPort;historyWritten=$false
+            startedAt=(Get-Date).ToString('o');updatedAt=(Get-Date).ToString('o')
+        }
+        Write-ChatJson (Join-Path $script:SessionRoot "$id.json") $state
+        Set-Location -LiteralPath $workspace
+        Set-ManagedChatWindowTitle -State $state
+        return [pscustomobject]$state
+    } catch {
+        if ($createdWorktree -and $originRepo -and $workspace) {
+            try { & git -C $originRepo worktree remove --force $workspace 2>$null | Out-Null } catch {}
+        }
+        if ($branch -and $originRepo) {
+            try { & git -C $originRepo branch -D $branch 2>$null | Out-Null } catch {}
+        }
+        if ($devPort) {Release-ChatPort -SessionId $id}
+
+        $slotFile=Join-Path $script:SlotRoot ("slot-{0}.json" -f $slot)
+        $slotState=Read-ChatJson $slotFile
+        if ($slotState -and [string](Get-ChatProp $slotState 'sessionId' '') -eq $id) {
+            Remove-Item -LiteralPath $slotFile -Force -ErrorAction SilentlyContinue
+        }
+        throw
     }
-    $state = [ordered]@{
-        id=$id; slot=$slot; emoji=$emoji; color=$color; project=$project; task=$Task
-        workspace=$workspace; originRepo=$originRepo; branch=$branch; isolated=$isolated
-        pid=$PID; active=$true; status='READY'; lastCommand=''; devPort=$devPort; historyWritten=$false
-        startedAt=(Get-Date).ToString('o'); updatedAt=(Get-Date).ToString('o')
-    }
-    Write-ChatJson (Join-Path $script:SessionRoot "$id.json") $state
-    Set-Location -LiteralPath $workspace
-    Set-ManagedChatWindowTitle -State $state
-    return [pscustomobject]$state
 }
 
 function Stop-ManagedChatSession {
     $s = Get-ManagedChatSession
     if ($null -eq $s) { return }
-    $s.active = $false
-    $s.status = 'ENDED'
-    $s.updatedAt = (Get-Date).ToString('o')
-    Release-SessionReservations $s
+
+    $protected=$false
+    if (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue) {
+        $protected=Test-SessionProtectedByLease $s
+    }
+
+    $s | Add-Member -NotePropertyName shellAlive -NotePropertyValue $false -Force
+    $s.updatedAt=(Get-Date).ToString('o')
+    if ($protected) {
+        $s.active=$true
+        $s.status='LEASED_EXTERNAL'
+        Write-ChatJson (Join-Path $script:SessionRoot "$($s.id).json") $s
+        return
+    }
+
+    $s.active=$false
+    $s.status='ENDED'
+    Release-SessionReservations $s | Out-Null
     Write-ChatHistory $s 'NORMAL_EXIT'
     Write-ChatJson (Join-Path $script:SessionRoot "$($s.id).json") $s
 }
@@ -398,5 +608,6 @@ function Show-ManagedChatStatus {
 }
 
 . (Join-Path $PSScriptRoot 'ChatMulti.Advanced.ps1')
+. (Join-Path $PSScriptRoot 'ChatMulti.Hardening.ps1')
 
-Export-ModuleMember -Function Initialize-ChatMulti,Get-ChatColor,Get-ChatConfig,Get-ManagedChatSession,Get-ManagedChatSessions,Expire-IdleManagedChatSessions,New-ManagedChatSession,Stop-ManagedChatSession,Install-ManagedChatPrompt,Set-ManagedChatState,Show-ManagedChatStatus,Acquire-ChatResource,Release-ChatResource,Get-ChatResourceLocks,Resolve-ChatCommandStatus,Get-ConfiguredResourceNames,Claim-ChatPort,Release-ChatPort,Get-RegisteredChatProjects,Register-ChatProject,Resolve-ChatProjectPath,Get-ChatHistory,Get-ChatGitSummary,Get-WorktreeCleanupCandidates,Invoke-SafeWorktreeCleanup,Get-SessionIdleInfo,Get-ChatPortReservations,Get-ProjectConflictGroups,Get-ChatProp
+Export-ModuleMember -Function Initialize-ChatMulti,Get-ChatColor,Get-ChatConfig,Get-ManagedChatSession,Get-ManagedChatSessions,Expire-IdleManagedChatSessions,New-ManagedChatSession,Stop-ManagedChatSession,Install-ManagedChatPrompt,Set-ManagedChatState,Show-ManagedChatStatus,Acquire-ChatResource,Release-ChatResource,Get-ChatResourceLock,Get-ChatResourceLocks,Resolve-ChatCommandStatus,Get-ConfiguredResourceNames,Resolve-ChatCommandResources,Resolve-AndroidCommandResources,Invoke-WithChatResource,Invoke-WithChatResources,Invoke-WithChatLease,New-ChatLease,Update-ChatLease,Close-ChatLease,Get-ChatLeases,Get-SessionLeaseState,Test-SessionProtectedByLease,Resolve-ExactGitBase,Resolve-ChatCanonicalRef,Get-ManagedWorktreeIdentity,Get-ManagedCommitSafety,Test-ManagedChatSessionInvariant,Claim-ChatPort,Release-ChatPort,Get-RegisteredChatProjects,Register-ChatProject,Resolve-ChatProjectPath,Get-ChatHistory,Get-ChatGitSummary,Get-WorktreeCleanupCandidates,Invoke-SafeWorktreeCleanup,Get-SessionIdleInfo,Get-ChatPortReservations,Get-ProjectConflictGroups,Get-ChatProp

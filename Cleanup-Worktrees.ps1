@@ -80,6 +80,11 @@ $result = [ordered]@{
             workspace = [string](Get-ChatProp $_ 'workspace' '')
             originRepo = [string](Get-ChatProp $_ 'originRepo' '')
             branch = [string](Get-ChatProp $_ 'branch' '')
+            baseRef = [string](Get-ChatProp $_ 'baseRef' '')
+            baseSha = [string](Get-ChatProp $_ 'baseSha' '')
+            canonicalRef = [string](Get-ChatProp $_ 'canonicalRef' '')
+            leaseState = [string](Get-ChatProp $_ 'leaseState' '')
+            ownCommits = if((Get-ChatProp $_ 'commitSafety' $null)){Get-ChatProp (Get-ChatProp $_ 'commitSafety' $null) 'OwnCommits' $null}else{$null}
             safe = [bool](Get-ChatProp $_ 'safe' $false)
             reason = [string](Get-ChatProp $_ 'reason' '')
         }

@@ -31,6 +31,10 @@ function Initialize-AdvancedChatState {
 function Get-ConfiguredResourceNames {
     param([Parameter(Mandatory)][string]$Line)
 
+    if (Get-Command Resolve-ChatCommandResources -ErrorAction SilentlyContinue) {
+        return @(Resolve-ChatCommandResources -Line $Line)
+    }
+
     $cfg = Get-ChatConfig
     $names = @()
     foreach ($rule in @($cfg.resourceRules)) {
@@ -74,6 +78,15 @@ function Claim-ChatPort {
             if ($old -and (Test-ChatProcessAlive ([int](Get-ChatProp $old 'pid' 0)))) {
                 continue
             }
+
+            $protected=$false
+            $oldSessionId=[string](Get-ChatProp $old 'sessionId' '')
+            if ($oldSessionId -and (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue)) {
+                $oldSession=Get-ManagedChatSession -Id $oldSessionId
+                if ($oldSession) {$protected=Test-SessionProtectedByLease $oldSession}
+            }
+            if ($protected) { continue }
+
             Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
         }
 
@@ -400,28 +413,19 @@ function Get-ChatGitSummary {
 function Get-WorktreeCleanupCandidateState {
     param([Parameter(Mandatory)]$Session)
 
-    $git = Get-ChatGitSummary $Session
-    $safe = $git.hasGit -and -not $git.dirty -and ($git.ahead -eq 0)
-    $reason = if ($safe) {
-        'SAFE'
-    } elseif (-not $git.hasGit) {
-        'NOT_A_WORKTREE'
-    } elseif ($git.dirty) {
-        'DIRTY'
-    } elseif ($git.ahead -gt 0) {
-        'UNMERGED_COMMITS'
-    } else {
-        'UNKNOWN'
+    if (Get-Command Get-HardenedWorktreeCleanupCandidateState -ErrorAction SilentlyContinue) {
+        return Get-HardenedWorktreeCleanupCandidateState -Session $Session
     }
 
+    $git = Get-ChatGitSummary $Session
     return [pscustomobject]@{
         id = [string](Get-ChatProp $Session 'id' '')
         project = [string](Get-ChatProp $Session 'project' '')
         workspace = [string](Get-ChatProp $Session 'workspace' '')
         originRepo = [string](Get-ChatProp $Session 'originRepo' '')
         branch = [string](Get-ChatProp $Session 'branch' '')
-        safe = $safe
-        reason = $reason
+        safe = $false
+        reason = if($git.dirty){'DIRTY'}else{'HARDENING_UNAVAILABLE'}
         git = $git
     }
 }
@@ -586,8 +590,16 @@ function Get-ChatPortReservations {
 
         $pidValue = [int](Get-ChatProp $reservation 'pid' 0)
         if (-not (Test-ChatProcessAlive $pidValue)) {
-            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
-            continue
+            $protected=$false
+            $sessionId=[string](Get-ChatProp $reservation 'sessionId' '')
+            if ($sessionId -and (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue)) {
+                $session=Get-ManagedChatSession -Id $sessionId
+                if ($session) {$protected=Test-SessionProtectedByLease $session}
+            }
+            if (-not $protected) {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+                continue
+            }
         }
         $items += $reservation
     }
@@ -612,10 +624,17 @@ function Get-ProjectConflictGroups {
 }
 
 function Release-SessionReservations {
-    param([Parameter(Mandatory)]$Session)
+    param(
+        [Parameter(Mandatory)]$Session,
+        [switch]$Force
+    )
 
     $sessionId = [string](Get-ChatProp $Session 'id' '')
-    if (-not $sessionId) { return }
+    if (-not $sessionId) { return $false }
+
+    if (-not $Force -and (Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue)) {
+        if (Test-SessionProtectedByLease $Session) { return $false }
+    }
 
     foreach ($lockFile in Get-ChildItem -LiteralPath $script:LockRoot -Filter '*.json' -File -ErrorAction SilentlyContinue) {
         $lock = Read-ChatJson $lockFile.FullName
@@ -634,4 +653,5 @@ function Release-SessionReservations {
             Remove-Item -LiteralPath $slotFile -Force -ErrorAction SilentlyContinue
         }
     }
+    return $true
 }

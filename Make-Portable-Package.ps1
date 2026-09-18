@@ -1,4 +1,4 @@
-param([string]$Version='2.1.2')
+param([string]$Version='2.2.0')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $dist=Join-Path $root 'dist'
@@ -14,7 +14,7 @@ foreach($item in Get-ChildItem -LiteralPath $root){
     if($item.Name -in $exclude){continue}
     Copy-Item $item.FullName -Destination $stage -Recurse -Force
 }
-foreach($dir in @('state\locks','state\sessions','state\slots','state\ports','state\logs','workspaces')){
+foreach($dir in @('state\locks','state\sessions','state\slots','state\ports','state\logs','state\leases','workspaces')){
     New-Item -ItemType Directory -Path (Join-Path $stage $dir) -Force|Out-Null
 }
 

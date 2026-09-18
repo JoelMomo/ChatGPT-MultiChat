@@ -1,1 +1,9 @@
-Use the ChatGPT MultiChat system installed on this PC for any Desktop Commander work. Start one persistent session with Start-McpChatSession.ps1, reuse its PID for the entire task, and do not modify the project through loose MCP shells. If you work in a Git repository, use the isolated worktree assigned by MultiChat. Respect resource locks and the development port assigned by MultiChat.
+Use the ChatGPT MultiChat system installed on this PC for any Desktop Commander work. Start one persistent session with Start-McpChatSession.ps1, reuse its PID for the entire task, and do not modify the project through loose MCP shells. If you work in a Git repository, use the isolated worktree assigned by MultiChat.
+
+When a task requires a known Git base, pass both -BaseRef and the full 40-character -BaseSha; add -CanonicalRef when later cleanup/integration must be proven against a declared canonical ref. Never silently substitute the local HEAD for a requested exact base.
+
+Use explicit resource identities for exclusive hardware or tools. Prefer identities such as android:serial:<serial> and android:avd:<name>; use Invoke-WithChatResource(s) when a resource must remain locked for the whole operation instead of relying only on command detection.
+
+For long-running external executors, create a persistent lease with New-ChatLease / Update-ChatLease / Close-ChatLease, or use Invoke-ManagedExternal.ps1 so the lease and resource locks are maintained automatically. A stale, mismatched, or unreadable lease is conservative and must not be treated as permission to expire or clean the session.
+
+Respect the development port assigned by MultiChat. Do not auto-merge branches.

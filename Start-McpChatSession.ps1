@@ -1,16 +1,21 @@
 param(
     [string]$ProjectPath,
     [string]$Task = 'work',
-    [switch]$NoWorktree
+    [switch]$NoWorktree,
+    [string]$BaseRef,
+    [string]$BaseSha,
+    [string]$CanonicalRef
 )
 
 Import-Module (Join-Path $PSScriptRoot 'ChatMulti.psm1') -Force -DisableNameChecking
-$session = New-ManagedChatSession -ProjectPath $ProjectPath -Task $Task -NoWorktree:$NoWorktree
+$session = New-ManagedChatSession -ProjectPath $ProjectPath -Task $Task -NoWorktree:$NoWorktree -BaseRef $BaseRef -BaseSha $BaseSha -CanonicalRef $CanonicalRef
 
 Write-Host ''
 Write-Host ("[CHAT-{0}] ACTIVE | {1} | {2}" -f $session.slot,$session.project,$session.task) -ForegroundColor $session.color
 Write-Host ('Workspace: ' + $session.workspace) -ForegroundColor DarkGray
 if ($session.branch) { Write-Host ('Branch: ' + $session.branch) -ForegroundColor DarkGray }
+if ($session.baseSha) { Write-Host ('Base: ' + $session.baseRef + ' @ ' + $session.baseSha) -ForegroundColor DarkGray }
+if ($session.canonicalRef) { Write-Host ('Canonical ref: ' + $session.canonicalRef) -ForegroundColor DarkGray }
 if ($session.devPort) { Write-Host ('Reserved port: ' + $session.devPort) -ForegroundColor DarkGray }
 Write-Host ''
 

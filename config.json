@@ -1,11 +1,12 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "maxSlots": 8,
   "refreshSeconds": 1,
   "maintenanceRefreshSeconds": 15,
   "historyRefreshSeconds": 5,
   "cleanupScanSeconds": 30,
   "autoCleanSafeWorktrees": true,
+  "defaultLeaseTtlMinutes": 60,
   "abandonedAfterMinutes": 3,
   "cleanExpireMinutes": 10,
   "dirtyExpireMinutes": 20,
@@ -14,12 +15,8 @@
   "historyLimit": 50,
   "resourceRules": [
     {
-      "name": "adb-thor",
-      "pattern": "(^|[ ;|&])(adb|fastboot|scrcpy)(\\.exe)?\\b|gradlew.*(install|connectedandroidtest)|install.*\\.apk"
-    },
-    {
-      "name": "android-emulator",
-      "pattern": "(^|[ ;|&])emulator(\\.exe)?\\b|avdmanager|sdkmanager"
+      "name": "android-sdk",
+      "pattern": "(^|[ ;|&])(avdmanager|sdkmanager)(\\.exe)?\\b"
     }
   ]
 }

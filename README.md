@@ -4,7 +4,7 @@ A portable Windows coordination layer for running **multiple ChatGPT chats throu
 
 ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Current version: **v2.1.2**
+> Current version: **v2.2.0**
 
 ## Why it exists
 
@@ -38,8 +38,12 @@ Each chat should open **one persistent managed session** and reuse that same pro
 
 - Up to **8 simultaneous managed chats**, each with a fixed slot color.
 - Isolated Git worktrees and branches for repository work.
+- Exact-base worktree creation with optional `BaseRef` + full `BaseSha` validation.
+- Optional declared `CanonicalRef` for fail-closed integration/cleanup checks.
 - Automatic development-port reservation.
-- Configurable locks for shared resources.
+- Dynamic resource identities, including Android serials and AVD names.
+- Explicit resource wrappers that hold a lock for an entire operation.
+- Persistent external-executor leases with heartbeat/TTL and conservative stale handling.
 - Activity classification such as `READY`, `BUILD`, `TEST`, `GIT`, `ADB`, `SERVER`, and `WAIT`.
 - Redesigned WinForms tray dashboard with a cleaner dark UI, metric cards, and improved table readability.
 - Short history of completed sessions.
@@ -49,6 +53,20 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Automatic hidden restart of Desktop Commander while the connection switch is On.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+
+## What's new in v2.2.0
+
+- Added exact Git base contracts: `-BaseRef` and full 40-character `-BaseSha` must resolve to the same commit or session creation fails closed.
+- Worktrees are created from the validated SHA instead of implicit local `HEAD`.
+- Added optional `-CanonicalRef` and cleanup rules that prove either zero own commits relative to `baseSha` or integration into the declared canonical ref.
+- Added persistent leases for external executors. `ACTIVE`, `STALE`, `MISMATCH`, and `UNKNOWN` leases protect sessions from expiry, reservation release, and cleanup.
+- Added `Invoke-ManagedExternal.ps1` with automatic lease heartbeat and resource retention for long-running external processes.
+- Added dynamic Android resource identities such as `android:serial:<serial>` and `android:avd:<name>`; different devices can run concurrently while the same identity collides.
+- Added explicit `Invoke-WithChatResource(s)` wrappers for operations that must hold a resource independently of command-regex detection.
+- Added `Validate-ManagedSession.ps1` for fail-closed post-execution validation of workspace, base, worktree identity, and lease state.
+- Cleanup now verifies exact worktree identity and refuses legacy/ambiguous states such as `BASE_UNKNOWN`, `FOREIGN_WORKTREE_STATE`, or protective leases.
+- Replaced the Desktop Commander switch's native CheckBox rendering with a fully custom-drawn panel so hover no longer paints a gray Windows background.
+- Added `HardeningTest.ps1` covering resource concurrency, exact-base mismatch, lease expiry/cleanup veto, stale/unknown lease behavior, canonical integration, and SAFE cleanup.
 
 ## What's new in v2.1.2
 
@@ -124,6 +142,23 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 
 From that point onward, all commands for that task should be sent to the **same PID**.
 
+### Exact-base sessions
+
+When an orchestrator already knows the exact base it expects, pass both the ref and the full SHA:
+
+```powershell
+Start-McpChatSession.ps1 `
+  -ProjectPath "C:\path\to\project" `
+  -Task "validated-task" `
+  -BaseRef "origin/main" `
+  -BaseSha "0123456789abcdef0123456789abcdef01234567" `
+  -CanonicalRef "origin/main"
+```
+
+MultiChat does not silently move the requested base. `BaseRef` and `BaseSha` must resolve to the same commit or session creation fails. The caller is responsible for fetching/revalidating the desired ref before starting the session when freshness matters.
+
+`CanonicalRef` is optional. When supplied, it is used later to prove whether commits created in the managed worktree have been integrated. MultiChat never auto-merges them.
+
 For work that should not create a Git worktree:
 
 ```powershell
@@ -177,35 +212,101 @@ Default behavior:
 - Idle session with local changes: waits 20 minutes.
 - Active work such as `BUILD`, `TEST`, `ADB`, or `SERVER`: does not expire while that activity is active.
 
-If the process that owns a session disappears, MultiChat can release its slot, port, and resource locks.
+If the process that owns a session disappears, MultiChat can release its slot, port, and resource locks **only when no protective external lease exists**. An `ACTIVE`, `STALE`, `MISMATCH`, or `UNKNOWN` lease keeps the session fail-closed.
 
 ## Git worktrees
 
-A finished worktree is considered safe to remove only when it has no uncommitted local changes, no untracked files, and no commits that still need to be integrated.
+Cleanup is deliberately fail-closed.
 
-By default, the dashboard automatically removes finished worktrees that pass those checks. It never auto-cleans a worktree while its owner PID is still alive. Worktrees that are dirty, contain untracked files, or have unmerged commits remain untouched.
+A finished managed worktree is `SAFE` only when MultiChat can prove all of the following:
+
+- there is no protective lease;
+- the workspace is still the exact worktree registered by the originating repository;
+- the expected managed branch still matches that worktree;
+- the tree has no tracked modifications or untracked files;
+- a valid persisted `baseSha` exists and is an ancestor of the worktree HEAD;
+- either the worktree has **zero own commits** relative to `baseSha`, or its HEAD is demonstrably integrated into the declared `canonicalRef`.
+
+If any proof is missing, the result is `KEEP`, not deletion. Examples include `BASE_UNKNOWN`, `BASE_INCORRECT`, `CANONICAL_REF_MISSING`, `UNMERGED_COMMITS`, `WORKSPACE_MISMATCH`, `FOREIGN_WORKTREE_STATE`, and protective lease states.
+
+Legacy session records that predate persisted `baseSha` are therefore not auto-cleaned merely because they look clean.
 
 You can still use:
 
 - **Clean safe worktrees** in the dashboard as a manual fallback;
-- `Cleanup-Worktrees.ps1` to inspect candidates;
-- `Cleanup-Worktrees.ps1 -Apply` to apply safe cleanup manually.
+- `Cleanup-Worktrees.ps1` to inspect candidates and reasons;
+- `Cleanup-Worktrees.ps1 -Apply` to apply only candidates that remain `SAFE` after immediate revalidation.
 
 The dashboard rescans periodically in the background and reports only the candidates that remain after automatic cleanup.
 
 ## Shared-resource locks
 
-`config.json` contains regular-expression rules that identify commands requiring exclusive access.
+Resources are identified by **real identity** whenever possible instead of one global Android lock.
 
-The included configuration protects, among other things:
+Examples:
 
-- ADB;
-- fastboot;
-- scrcpy;
-- connected Gradle/APK installation operations;
-- Android emulator and SDK-management tools.
+- `android:serial:THOR_SERIAL`
+- `android:serial:emulator-5554`
+- `android:avd:pixel_test`
+- `android-sdk`
 
-If another managed chat already owns the relevant lock, the new operation is blocked instead of being executed concurrently.
+ADB/fastboot/scrcpy commands with an explicit `-s <serial>` are locked by serial. Emulator launches with `-avd <name>` are locked by AVD name. Two different serials or AVDs can therefore run concurrently, while two operations targeting the same identity collide.
+
+When an ADB-style command omits the serial, MultiChat uses `ANDROID_SERIAL` when present, otherwise it resolves a single connected ADB device when that is unambiguous. If it cannot prove one device identity, it falls back to the conservative `android:adb-default` resource. Ambiguous ADB/fastboot resources conflict with every `android:serial:*` lock, so uncertainty reduces concurrency rather than risking two operations on the same device.
+
+Regex rules in `config.json` remain available for additional static shared resources, but Android serial/AVD isolation is resolved dynamically.
+
+For operations where the lock must remain held for the **entire wrapper operation**, use:
+
+```powershell
+Invoke-WithChatResource -Resource "android:serial:emulator-5554" -ScriptBlock {
+    # complete operation here
+}
+```
+
+or `Invoke-WithChatResources` for multiple identities. These wrappers are independent of command-line regex detection.
+
+## External executor leases
+
+Long-running external executors can outlive the interactive shell that launched them. A lease keeps the managed session, worktree, slot, development port, and lease-owned resource locks protected while that executor is active.
+
+Core commands:
+
+- `New-ChatLease`
+- `Update-ChatLease` for heartbeat/renewal
+- `Close-ChatLease`
+- `Invoke-WithChatLease`
+
+For a complete external process wrapper with automatic heartbeat:
+
+```powershell
+.\Invoke-ManagedExternal.ps1 `
+  -SessionId $env:CHATGPT_SESSION_ID `
+  -Owner "external-validator" `
+  -Resource "android:serial:emulator-5554" `
+  -FilePath "powershell.exe" `
+  -ArgumentList @("-NoProfile","-File","run-validation.ps1")
+```
+
+Lease states are conservative:
+
+- `ACTIVE`: execution is protected;
+- `STALE`: heartbeat expired, but MultiChat still protects the session;
+- `MISMATCH`: lease snapshot does not match session/workspace/base;
+- `UNKNOWN`: lease evidence exists but cannot be safely interpreted;
+- `NONE`: no protective lease is present.
+
+Only `NONE` permits ordinary expiry/release/cleanup. Stale, mismatched, or unreadable lease evidence is never treated as permission to delete work.
+
+`Validate-ManagedSession.ps1` can be used after an external execution to fail closed on workspace/base/lease mismatches:
+
+```powershell
+.\Validate-ManagedSession.ps1 `
+  -SessionId $env:CHATGPT_SESSION_ID `
+  -ExpectedWorkspace $env:CHATGPT_WORKSPACE `
+  -ExpectedBaseSha $env:CHATGPT_BASE_SHA `
+  -RequireLease
+```
 
 ## Development ports
 
@@ -225,6 +326,7 @@ The main settings live in `config.json`:
 | `historyRefreshSeconds` | 5 | Recent-history refresh interval |
 | `cleanupScanSeconds` | 30 | Background worktree-scan interval |
 | `autoCleanSafeWorktrees` | true | Automatically remove finished worktrees that pass all SAFE checks |
+| `defaultLeaseTtlMinutes` | 60 | Default external-executor lease TTL when a caller does not supply one |
 | `abandonedAfterMinutes` | 3 | Time before a READY session is marked abandoned |
 | `cleanExpireMinutes` | 10 | Expiry for clean idle sessions |
 | `dirtyExpireMinutes` | 20 | Expiry for idle sessions with local changes |
@@ -232,7 +334,7 @@ The main settings live in `config.json`:
 | `portRangeCount` | 100 | Number of ports in the reservation pool |
 | `historyLimit` | 50 | Maximum stored history entries |
 
-Resource-lock rules are also defined in `config.json`.
+Additional static resource-lock rules are defined in `config.json`. Android serial and AVD identities are resolved dynamically by MultiChat.
 
 ## Main files
 
@@ -240,6 +342,7 @@ Resource-lock rules are also defined in `config.json`.
 |---|---|
 | `ChatMulti.psm1` | Session-management core and module loader |
 | `ChatMulti.Advanced.ps1` | Configuration cache, ports, history, project resolution, Git/status, cleanup, idle-state, conflicts, and reservations |
+| `ChatMulti.Hardening.ps1` | Exact-base validation, dynamic resource identities, leases, worktree identity, canonical integration checks, and fail-closed validation |
 | `MultiChat-Tray.ps1` | Lightweight dashboard orchestration and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
 | `MultiChat-Maintenance.ps1` | Background Git, expiry, liveness, and Desktop Commander maintenance worker |
@@ -248,7 +351,10 @@ Resource-lock rules are also defined in `config.json`.
 | `config.json` | Portable configuration |
 | `PROMPT-FOR-CHATGPT.txt` | Ready-to-paste ChatGPT instruction |
 | `SelfTest.cmd` / `SelfTest.ps1` | System validation |
-| `Cleanup-Worktrees.ps1` | Safe worktree cleanup |
+| `Cleanup-Worktrees.ps1` | Fail-closed worktree cleanup and diagnostic result output |
+| `Validate-ManagedSession.ps1` | Post-execution workspace/base/lease validator |
+| `Invoke-ManagedExternal.ps1` | Long-running external-process wrapper with lease heartbeat and resource retention |
+| `HardeningTest.ps1` | Concurrency, exact-base, lease, and cleanup safety test suite |
 | `Show-History.ps1` | Session-history viewer |
 | `Make-Portable-Package.ps1` | Builds the portable release ZIP |
 
@@ -267,18 +373,18 @@ SELF-TEST: OK
 Dependencies, scripts, configuration, registry robustness, slots, colors and ports: OK.
 ```
 
-The test checks dependencies, PowerShell syntax, configuration, slot behavior, fixed colors, and port reservation.
+The self-test checks dependencies, PowerShell syntax, configuration, slot behavior, UI controls, port reservation, and then runs `HardeningTest.ps1`. The hardening suite verifies dynamic-resource concurrency, exact-base creation and mismatch rejection, lease protection, stale/unknown fail-closed behavior, canonical integration, and SAFE cleanup.
 
 ## Portability
 
 The project uses paths relative to its own folder.
 
-`Make-Portable-Package.ps1` creates a ZIP without copying machine-local runtime state, logs, sessions, or worktrees.
+`Make-Portable-Package.ps1` creates a ZIP without copying machine-local runtime state, logs, sessions, leases, or worktrees. The package recreates empty runtime directories, including `state\leases`, on the target machine.
 
 To build a package:
 
 ```powershell
-.\Make-Portable-Package.ps1 -Version "2.1.0"
+.\Make-Portable-Package.ps1 -Version "2.2.0"
 ```
 
 ## Limitations

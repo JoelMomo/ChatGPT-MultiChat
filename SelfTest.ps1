@@ -9,9 +9,9 @@ foreach($name in @('git.exe','npx.cmd','powershell.exe')){
 }
 
 foreach($required in @(
-    'ChatMulti.psm1','ChatMulti.Advanced.ps1',
+    'ChatMulti.psm1','ChatMulti.Advanced.ps1','ChatMulti.Hardening.ps1',
     'MultiChat-Tray.ps1','MultiChat.UI.ps1','MultiChat-Maintenance.ps1',
-    'Cleanup-Worktrees.ps1',
+    'Cleanup-Worktrees.ps1','Validate-ManagedSession.ps1','Invoke-ManagedExternal.ps1','HardeningTest.ps1',
     'config.json','PROMPT-FOR-CHATGPT.txt'
 )){
     if(-not(Test-Path -LiteralPath (Join-Path $root $required))){
@@ -38,6 +38,7 @@ try{
     if([int]$cfg.refreshSeconds -lt 1){$errors+='refreshSeconds is too low'}
     if([int]$cfg.maintenanceRefreshSeconds -lt 5){$errors+='maintenanceRefreshSeconds is too low'}
     if([int]$cfg.cleanupScanSeconds -lt 10){$errors+='cleanupScanSeconds is too low'}
+    if([int](Get-ChatProp $cfg 'defaultLeaseTtlMinutes' 0) -lt 1){$errors+='defaultLeaseTtlMinutes is invalid'}
 
     $projectsPath=Join-Path $root 'state\projects.json'
     $hadProjects=Test-Path -LiteralPath $projectsPath
@@ -118,8 +119,14 @@ try{
     if($statusLed.Width -ne 10 -or $statusLed.Height -ne 10){
         $errors+='Status LED has an unexpected size'
     }
-    if(-not $connectionSwitch.Checked){
+    if(-not (Get-ToggleSwitchChecked -Toggle $connectionSwitch)){
         $errors+='Desktop Commander switch does not default to On'
+    }
+    if($connectionSwitch.GetType().FullName -ne 'System.Windows.Forms.Panel'){
+        $errors+='Desktop Commander switch still uses a native button/checkbox control'
+    }
+    if($connectionSwitch.BackColor -ne $script:UiColors.Bg){
+        $errors+='Desktop Commander switch background does not match the header'
     }
     if($gitView.ToolTip -notmatch 'not tracked by Git'){
         $errors+="Unexpected Git tooltip: $($gitView.ToolTip)"
@@ -157,7 +164,8 @@ try{
         Set-Content (Join-Path $repo 'probe.txt') 'ok' -Encoding ascii
         & git -C $repo add probe.txt
         & git -C $repo commit -qm 'probe'
-        & git -C $repo worktree add -q -b cleanup-probe $worktree HEAD
+        $cleanupBaseSha=([string](& git -C $repo rev-parse HEAD)).Trim().ToLowerInvariant()
+        & git -C $repo worktree add -q -b cleanup-probe $worktree $cleanupBaseSha
 
         $liveSession=[pscustomobject]@{
             id='selftest-live';project='selftest';workspace=$worktree
@@ -185,6 +193,7 @@ try{
         $candidate=[pscustomobject]@{
             id='selftest';project='selftest';workspace=$worktree
             originRepo=$repo;branch='cleanup-probe';safe=$true;reason='SAFE'
+            baseRef='HEAD';baseSha=$cleanupBaseSha;canonicalRef=''
         }
         $removed=@(Invoke-SafeWorktreeCleanup -Candidates @($candidate))
         if($removed.Count -ne 1 -or (Test-Path -LiteralPath $worktree)){
@@ -195,6 +204,11 @@ try{
         }
     }finally{
         Remove-Item $cleanupBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'HardeningTest.ps1')
+    if($LASTEXITCODE -ne 0){
+        $errors+="HardeningTest.ps1 failed with exit code $LASTEXITCODE"
     }
 
     Stop-ManagedChatSession
