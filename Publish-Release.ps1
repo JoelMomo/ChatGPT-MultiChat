@@ -26,8 +26,15 @@ if($LASTEXITCODE -ne 0){throw 'Package signing failed.'}
 if($LASTEXITCODE -ne 0){throw 'Package signature verification failed.'}
 
 $tag='v'+$Version
-$existing=& gh release view $tag --repo JoelMomo/ChatGPT-MultiChat --json tagName 2>$null
-if($LASTEXITCODE -eq 0){throw "Release $tag already exists."}
+$oldErrorActionPreference=$ErrorActionPreference
+try{
+    $ErrorActionPreference='Continue'
+    $existing=& gh release view $tag --repo JoelMomo/ChatGPT-MultiChat --json tagName 2>$null
+    $existingExit=$LASTEXITCODE
+}finally{
+    $ErrorActionPreference=$oldErrorActionPreference
+}
+if($existingExit -eq 0){throw "Release $tag already exists."}
 
 $args=@(
     'release','create',$tag,
