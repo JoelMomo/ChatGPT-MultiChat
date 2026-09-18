@@ -12,7 +12,7 @@ foreach($required in @(
     'ChatMulti.psm1','ChatMulti.Advanced.ps1','ChatMulti.Hardening.ps1',
     'MultiChat-Tray.ps1','MultiChat.UI.ps1','MultiChat-Maintenance.ps1',
     'Cleanup-Worktrees.ps1','Validate-ManagedSession.ps1','Invoke-ManagedExternal.ps1','HardeningTest.ps1',
-    'config.json','PROMPT-FOR-CHATGPT.txt'
+    'Check-Updates.ps1','config.json','PROMPT-FOR-CHATGPT.txt'
 )){
     if(-not(Test-Path -LiteralPath (Join-Path $root $required))){
         $errors+="Missing file: $required"
@@ -39,6 +39,32 @@ try{
     if([int]$cfg.maintenanceRefreshSeconds -lt 5){$errors+='maintenanceRefreshSeconds is too low'}
     if([int]$cfg.cleanupScanSeconds -lt 10){$errors+='cleanupScanSeconds is too low'}
     if([int](Get-ChatProp $cfg 'defaultLeaseTtlMinutes' 0) -lt 1){$errors+='defaultLeaseTtlMinutes is invalid'}
+    if(-not [bool](Get-ChatProp $cfg 'checkForUpdates' $false)){$errors+='checkForUpdates should default to true'}
+    if([int](Get-ChatProp $cfg 'updateCheckHours' 0) -lt 1){$errors+='updateCheckHours is invalid'}
+
+    $updateResult=Join-Path $root 'state\selftest-update.json'
+    Remove-Item $updateResult -Force -ErrorAction SilentlyContinue
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Check-Updates.ps1') -CurrentVersion '2.2.1' -ResultFile $updateResult -MockLatestVersion '9.9.9' -MockReleaseUrl 'https://example.invalid/v9.9.9'
+    if($LASTEXITCODE -ne 0 -or -not (Test-Path $updateResult)){
+        $errors+='Update checker mock-newer test did not produce a result'
+    }else{
+        $updateProbe=Get-Content $updateResult -Raw|ConvertFrom-Json
+        if(-not [bool]$updateProbe.updateAvailable -or [string]$updateProbe.latestVersion -ne '9.9.9'){
+            $errors+='Update checker did not detect a newer version'
+        }
+    }
+    Remove-Item $updateResult -Force -ErrorAction SilentlyContinue
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Check-Updates.ps1') -CurrentVersion '9.9.9' -ResultFile $updateResult -MockLatestVersion '9.9.9'
+    if($LASTEXITCODE -ne 0 -or -not (Test-Path $updateResult)){
+        $errors+='Update checker mock-current test did not produce a result'
+    }else{
+        $updateProbe=Get-Content $updateResult -Raw|ConvertFrom-Json
+        if([bool]$updateProbe.updateAvailable){
+            $errors+='Update checker incorrectly flagged the installed version as outdated'
+        }
+    }
+    Remove-Item $updateResult -Force -ErrorAction SilentlyContinue
 
     $projectsPath=Join-Path $root 'state\projects.json'
     $hadProjects=Test-Path -LiteralPath $projectsPath

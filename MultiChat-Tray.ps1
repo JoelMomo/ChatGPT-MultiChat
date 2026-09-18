@@ -40,9 +40,19 @@ $script:cleanupProcess=$null
 $script:cleanupScanResultFile=$null
 $script:cleanupApplyResultFile=$null
 $script:lastHistoryText=''
+$script:updateProcess=$null
+$script:updateResultFile=$null
+$script:lastUpdateCheckStart=[datetime]::MinValue
+$script:updateAvailable=$false
+$script:updateDismissed=$false
+$script:updateNotified=$false
+$script:latestVersion=''
+$script:latestReleaseUrl=''
+$script:currentVersion=if(Test-Path (Join-Path $root 'VERSION')){(Get-Content (Join-Path $root 'VERSION') -Raw).Trim()}else{'0.0.0'}
 
 $stateCacheRoot=Join-Path $root 'state\cache'
 New-Item -ItemType Directory -Path $stateCacheRoot -Force|Out-Null
+$script:updateCacheFile=Join-Path $stateCacheRoot 'update-cache.json'
 
 function Get-RemoteCommanderProcess {
     @(Get-CimInstance Win32_Process|Where-Object{
@@ -113,6 +123,76 @@ function Get-GitSnapshot {
     $id=[string](Get-ChatProp $Session 'id' '')
     if(-not $id){return $null}
     return $script:gitCache[$id]
+}
+
+function Start-UpdateCheck {
+    if(-not [bool](Get-ChatProp $cfg 'checkForUpdates' $true)){return}
+    if($script:updateProcess -and -not $script:updateProcess.HasExited){return}
+
+    $result=Join-Path $stateCacheRoot 'update-result.json'
+    Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
+    $hours=[int](Get-ChatProp $cfg 'updateCheckHours' 24)
+    if($hours -lt 1){$hours=24}
+    $args=@(
+        '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
+        '-File',(Join-Path $root 'Check-Updates.ps1'),
+        '-CurrentVersion',$script:currentVersion,
+        '-ResultFile',$result,
+        '-CacheFile',$script:updateCacheFile,
+        '-CacheHours',$hours
+    )
+    $script:updateResultFile=$result
+    $script:updateProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
+    $script:lastUpdateCheckStart=Get-Date
+}
+
+function Complete-UpdateCheck {
+    if(-not $script:updateProcess -or -not $script:updateProcess.HasExited){return $false}
+
+    if($script:updateResultFile -and (Test-Path -LiteralPath $script:updateResultFile)){
+        try{
+            $result=Get-Content -LiteralPath $script:updateResultFile -Raw|ConvertFrom-Json
+            if([bool](Get-ChatProp $result 'success' $false)){
+                $script:updateAvailable=[bool](Get-ChatProp $result 'updateAvailable' $false)
+                $script:latestVersion=[string](Get-ChatProp $result 'latestVersion' '')
+                $script:latestReleaseUrl=[string](Get-ChatProp $result 'releaseUrl' '')
+            }
+        }catch{}
+    }
+
+    $script:updateProcess.Dispose()
+    $script:updateProcess=$null
+    if($script:updateResultFile){Remove-Item -LiteralPath $script:updateResultFile -Force -ErrorAction SilentlyContinue}
+    $script:updateResultFile=$null
+    return $true
+}
+
+function Update-UpdateUi {
+    if(-not [bool](Get-ChatProp $cfg 'checkForUpdates' $true)){
+        $versionLabel.Text="v$($script:currentVersion)"
+        $versionLabel.ForeColor=$script:UiColors.Muted
+        $updateButton.Visible=$false
+        $laterButton.Visible=$false
+        return
+    }
+
+    if($script:updateAvailable -and -not $script:updateDismissed){
+        $versionLabel.Text="v$($script:currentVersion)  ·  v$($script:latestVersion) available"
+        $versionLabel.ForeColor=$script:UiColors.Warn
+        $updateButton.Text='Download update'
+        $updateButton.Visible=$true
+        $laterButton.Visible=$true
+
+        if(-not $script:updateNotified){
+            $script:updateNotified=$true
+            try{$notify.ShowBalloonTip(3500,'MultiChat update available',"Version $($script:latestVersion) is ready to download.",'Info')}catch{}
+        }
+    }else{
+        $versionLabel.Text="v$($script:currentVersion)"
+        $versionLabel.ForeColor=$script:UiColors.Muted
+        $updateButton.Visible=$false
+        $laterButton.Visible=$false
+    }
 }
 
 function Start-MaintenanceWorker {
@@ -356,6 +436,13 @@ function Update-History {
 function Refresh-Dashboard {
     $now=Get-Date
 
+    [void](Complete-UpdateCheck)
+    $updateHours=[int](Get-ChatProp $cfg 'updateCheckHours' 24)
+    if($updateHours -lt 1){$updateHours=24}
+    if([bool](Get-ChatProp $cfg 'checkForUpdates' $true) -and -not $script:updateProcess -and (($now-$script:lastUpdateCheckStart).TotalHours -ge $updateHours)){
+        Start-UpdateCheck
+    }
+
     [void](Complete-MaintenanceWorker)
     $maintenanceInterval=[int](Get-ChatProp $cfg 'maintenanceRefreshSeconds' 15)
     if(-not $script:maintenanceProcess -and (($now-$script:lastMaintenanceStart).TotalSeconds -ge $maintenanceInterval)){
@@ -422,6 +509,7 @@ function Refresh-Dashboard {
     }
 
     $notify.Text=("MultiChat: {0} chats | {1} working" -f $sessions.Count,$working)
+    Update-UpdateUi
     Update-History
 }
 
@@ -543,22 +631,46 @@ $metrics.Controls.AddRange(@($dcCard,$chatCard,$workCard,$treeCard))
 
 $actionPanel=New-Object Windows.Forms.Panel
 $actionPanel.Dock='Bottom'
-$actionPanel.Height=58
+$actionPanel.Height=68
 $actionPanel.BackColor=$script:UiColors.Surface
-$actionPanel.Padding=New-Object Windows.Forms.Padding(12,10,12,10)
+$actionPanel.Padding=New-Object Windows.Forms.Padding(12,8,12,8)
 $form.Controls.Add($actionPanel)
 
+$actionButtons=New-Object Windows.Forms.Panel
+$actionButtons.Dock='Right'
+$actionButtons.Width=455
+$actionButtons.BackColor=$script:UiColors.Surface
+$actionPanel.Controls.Add($actionButtons)
+
+$updateButton=New-FlatButton -Text 'Download update' -Width 160
+$updateButton.Location=New-Object Drawing.Point(0,8)
+$updateButton.Visible=$false
+$actionButtons.Controls.Add($updateButton)
+
+$laterButton=New-FlatButton -Text 'Later' -Width 70
+$laterButton.Location=New-Object Drawing.Point(168,8)
+$laterButton.Visible=$false
+$actionButtons.Controls.Add($laterButton)
+
 $cleanupButton=New-FlatButton -Text 'Clean safe worktrees' -Width 205 -Accent
-$cleanupButton.Dock='Right'
-$actionPanel.Controls.Add($cleanupButton)
+$cleanupButton.Location=New-Object Drawing.Point(246,8)
+$actionButtons.Controls.Add($cleanupButton)
 
 $cleanupHint=New-Object Windows.Forms.Label
 $cleanupHint.Text='Worktree checks run in the background.'
 $cleanupHint.AutoSize=$true
 $cleanupHint.ForeColor=$script:UiColors.Muted
 $cleanupHint.Font=New-Object Drawing.Font('Segoe UI',9)
-$cleanupHint.Location=New-Object Drawing.Point(12,19)
+$cleanupHint.Location=New-Object Drawing.Point(12,10)
 $actionPanel.Controls.Add($cleanupHint)
+
+$versionLabel=New-Object Windows.Forms.Label
+$versionLabel.Text="v$($script:currentVersion)"
+$versionLabel.AutoSize=$true
+$versionLabel.ForeColor=$script:UiColors.Muted
+$versionLabel.Font=New-Object Drawing.Font('Segoe UI',8.5)
+$versionLabel.Location=New-Object Drawing.Point(12,38)
+$actionPanel.Controls.Add($versionLabel)
 
 $split=New-Object Windows.Forms.SplitContainer
 $split.Dock='Fill'
@@ -663,6 +775,15 @@ $miFolder.Add_Click({Start-Process explorer.exe -ArgumentList $root})
 $miRestart.Add_Click({Restart-RemoteCommander})
 $miClean.Add_Click({Start-WorktreeCleanup})
 $cleanupButton.Add_Click({Start-WorktreeCleanup})
+$updateButton.Add_Click({
+    if($script:latestReleaseUrl){
+        Start-Process -FilePath $script:latestReleaseUrl
+    }
+})
+$laterButton.Add_Click({
+    $script:updateDismissed=$true
+    Update-UpdateUi
+})
 $notify.Add_DoubleClick({$form.Show();$form.WindowState='Normal';$form.Activate()})
 
 $form.Add_FormClosing({
@@ -679,6 +800,7 @@ $miExit.Add_Click({
     if($script:maintenanceProcess -and -not $script:maintenanceProcess.HasExited){$script:maintenanceProcess.Kill()}
     if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){$script:cleanupScanProcess.Kill()}
     if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){$script:cleanupProcess.Kill()}
+    if($script:updateProcess -and -not $script:updateProcess.HasExited){$script:updateProcess.Kill()}
     $notify.Visible=$false
     $form.Close()
     [Windows.Forms.Application]::Exit()
@@ -690,6 +812,7 @@ $timer.Add_Tick({Refresh-Dashboard})
 $form.Add_ResizeBegin({$timer.Stop()})
 $form.Add_ResizeEnd({Refresh-Dashboard;$timer.Start()})
 
+Start-UpdateCheck
 Start-MaintenanceWorker
 Start-WorktreeScan
 Refresh-Dashboard

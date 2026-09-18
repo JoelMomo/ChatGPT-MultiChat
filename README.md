@@ -4,7 +4,7 @@ A portable Windows coordination layer for running **multiple ChatGPT chats throu
 
 ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Current version: **v2.2.0**
+> Current version: **v2.2.1**
 
 ## Why it exists
 
@@ -53,6 +53,16 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Automatic hidden restart of Desktop Commander while the connection switch is On.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+
+## What's new in v2.2.1
+
+- Added a background GitHub Releases update check with a persistent 24-hour cache.
+- The installed version is always shown in the dashboard footer.
+- When a newer release exists, MultiChat shows the latest version plus **Download update** and **Later** controls.
+- Update checks never block the UI and fail silently when the network or GitHub is unavailable.
+- The update notification can be disabled with `checkForUpdates` or rescheduled with `updateCheckHours`.
+- Update comparison is recalculated against the currently installed version even when release metadata comes from cache.
+- MultiChat only opens the release page; it does not self-update or replace files automatically.
 
 ## What's new in v2.2.0
 
@@ -321,6 +331,8 @@ The main settings live in `config.json`:
 | Setting | Default | Purpose |
 |---|---:|---|
 | `maxSlots` | 8 | Maximum simultaneous managed chats |
+| `checkForUpdates` | true | Check GitHub Releases for newer MultiChat versions |
+| `updateCheckHours` | 24 | Minimum interval between successful release checks |
 | `refreshSeconds` | 1 | Lightweight chat-status/UI refresh interval |
 | `maintenanceRefreshSeconds` | 15 | Background Git, expiry, liveness, and Desktop Commander maintenance interval |
 | `historyRefreshSeconds` | 5 | Recent-history refresh interval |
@@ -346,6 +358,7 @@ Additional static resource-lock rules are defined in `config.json`. Android seri
 | `MultiChat-Tray.ps1` | Lightweight dashboard orchestration and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
 | `MultiChat-Maintenance.ps1` | Background Git, expiry, liveness, and Desktop Commander maintenance worker |
+| `Check-Updates.ps1` | Background GitHub Releases checker with cached version comparison |
 | `Start-McpChatSession.ps1` | Starts and owns one persistent managed chat session |
 | `Setup.cmd` / `Setup.ps1` | Local setup and desktop shortcut |
 | `config.json` | Portable configuration |
@@ -373,7 +386,7 @@ SELF-TEST: OK
 Dependencies, scripts, configuration, registry robustness, slots, colors and ports: OK.
 ```
 
-The self-test checks dependencies, PowerShell syntax, configuration, slot behavior, UI controls, port reservation, and then runs `HardeningTest.ps1`. The hardening suite verifies dynamic-resource concurrency, exact-base creation and mismatch rejection, lease protection, stale/unknown fail-closed behavior, canonical integration, and SAFE cleanup.
+The self-test checks dependencies, PowerShell syntax, configuration, slot behavior, UI controls, port reservation, deterministic update-version detection, and then runs `HardeningTest.ps1`. The hardening suite verifies dynamic-resource concurrency, exact-base creation and mismatch rejection, lease protection, stale/unknown fail-closed behavior, canonical integration, and SAFE cleanup.
 
 ## Portability
 
@@ -384,7 +397,7 @@ The project uses paths relative to its own folder.
 To build a package:
 
 ```powershell
-.\Make-Portable-Package.ps1 -Version "2.2.0"
+.\Make-Portable-Package.ps1 -Version "2.2.1"
 ```
 
 ## Limitations

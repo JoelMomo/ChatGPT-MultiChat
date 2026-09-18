@@ -1,6 +1,8 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "maxSlots": 8,
+  "checkForUpdates": true,
+  "updateCheckHours": 24,
   "refreshSeconds": 1,
   "maintenanceRefreshSeconds": 15,
   "historyRefreshSeconds": 5,
