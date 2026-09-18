@@ -4,7 +4,7 @@ A portable Windows coordination layer for running **multiple ChatGPT chats throu
 
 ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Current version: **v2.1.1**
+> Current version: **v2.1.2**
 
 ## Why it exists
 
@@ -45,9 +45,19 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Short history of completed sessions.
 - Automatic background cleanup of finished worktrees that are verified `SAFE`, with manual cleanup retained as a fallback.
 - Recovery of abandoned sessions and dead owner processes.
-- Automatic hidden restart of Desktop Commander when it is no longer available.
+- Desktop Commander connection status with green/yellow/red LED, plus an On/Off connection switch.
+- Automatic hidden restart of Desktop Commander while the connection switch is On.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+
+## What's new in v2.1.2
+
+- Fixed the minimize-button container so its hover square is always fully visible.
+- Replaced the header's flow layout with fixed-position window controls.
+- Added a status LED for Desktop Commander: green `ONLINE`, yellow `CONNECTING`, red `OFFLINE`.
+- Added a connection switch in the header. It defaults to On at every app launch.
+- Switching Off stops Desktop Commander and disables automatic reconnect attempts until the switch is turned On again.
+- Switching On starts Desktop Commander when needed and transitions through `CONNECTING` to `ONLINE`.
 
 ## What's new in v2.1.1
 

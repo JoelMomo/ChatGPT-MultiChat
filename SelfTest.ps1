@@ -95,13 +95,40 @@ try{
         $errors+="Expected 8 resize grips, found $($resizeGrips.Count)"
     }
     $windowButton=New-WindowButton -Text ([char]0x2212)
+    if($windowButton.Width -ne 34 -or $windowButton.Height -ne 34){
+        $errors+="Window button is not square: $($windowButton.Width)x$($windowButton.Height)"
+    }
     if($windowButton.FlatAppearance.MouseOverBackColor -eq $windowButton.BackColor){
         $errors+='Window button hover state is not distinct'
+    }
+
+    $windowPanel=New-Object Windows.Forms.Panel
+    $windowPanel.Size=New-Object Drawing.Size(76,36)
+    $windowButton.Location=New-Object Drawing.Point(4,0)
+    $windowPanel.Controls.Add($windowButton)
+    $closeButton=New-WindowButton -Text ([char]0x00D7) -CloseButton
+    $closeButton.Location=New-Object Drawing.Point(40,0)
+    $windowPanel.Controls.Add($closeButton)
+    if($windowButton.Right -gt $windowPanel.Width -or $closeButton.Right -gt $windowPanel.Width){
+        $errors+='Window controls are clipped by their container'
+    }
+
+    $statusLed=New-StatusLed -Size 10
+    $connectionSwitch=New-ToggleSwitch -Checked $true
+    if($statusLed.Width -ne 10 -or $statusLed.Height -ne 10){
+        $errors+='Status LED has an unexpected size'
+    }
+    if(-not $connectionSwitch.Checked){
+        $errors+='Desktop Commander switch does not default to On'
     }
     if($gitView.ToolTip -notmatch 'not tracked by Git'){
         $errors+="Unexpected Git tooltip: $($gitView.ToolTip)"
     }
-    $windowButton.Dispose()
+
+    $statusLed.Dispose()
+    $connectionSwitch.Dispose()
+    $closeButton.Dispose()
+    $windowPanel.Dispose()
     $testForm.Dispose()
 
     $nestedNotWorktree=Join-Path $root 'state\selftest-not-worktree'

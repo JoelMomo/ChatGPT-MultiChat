@@ -319,7 +319,7 @@ function New-WindowButton {
     $button=New-Object Windows.Forms.Button
     $button.Text=$Text
     $button.Width=34
-    $button.Height=30
+    $button.Height=34
     $button.FlatStyle='Flat'
     $button.FlatAppearance.BorderSize=0
     $button.UseVisualStyleBackColor=$false
@@ -396,4 +396,73 @@ function Add-WindowResizeGrips {
 
     $Form.Add_Resize($layout)
     & $layout
+}
+
+
+function New-StatusLed {
+    param([int]$Size=10)
+
+    $led=New-Object Windows.Forms.Panel
+    $led.Size=New-Object Drawing.Size($Size,$Size)
+    $led.Tag=$script:UiColors.Muted
+    $led.Add_Paint({
+        param($sender,$e)
+        $e.Graphics.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $brush=New-Object Drawing.SolidBrush([Drawing.Color]$sender.Tag)
+        try{$e.Graphics.FillEllipse($brush,0,0,$sender.Width-1,$sender.Height-1)}
+        finally{$brush.Dispose()}
+    })
+    return $led
+}
+
+function Set-StatusLed {
+    param(
+        [Parameter(Mandatory)]$Led,
+        [Parameter(Mandatory)][Drawing.Color]$Color
+    )
+    $Led.Tag=$Color
+    $Led.Invalidate()
+}
+
+
+function New-ToggleSwitch {
+    param([bool]$Checked=$true)
+
+    $toggle=New-Object Windows.Forms.CheckBox
+    $toggle.Appearance='Button'
+    $toggle.AutoSize=$false
+    $toggle.Size=New-Object Drawing.Size(44,22)
+    $toggle.FlatStyle='Flat'
+    $toggle.FlatAppearance.BorderSize=0
+    $toggle.Text=''
+    $toggle.Checked=$Checked
+    $toggle.Cursor=[Windows.Forms.Cursors]::Hand
+    $toggle.TabStop=$false
+    $toggle.UseVisualStyleBackColor=$false
+
+    $toggle.Add_Paint({
+        param($sender,$e)
+        $e.Graphics.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $track=if($sender.Checked){$script:UiColors.Good}else{$script:UiColors.Surface3}
+        $trackBrush=New-Object Drawing.SolidBrush($track)
+        $knobBrush=New-Object Drawing.SolidBrush($script:UiColors.Text)
+
+        try{
+            $h=$sender.Height-2
+            $r=[int]($h/2)
+            $e.Graphics.FillRectangle($trackBrush,$r,1,$sender.Width-($r*2),$h)
+            $e.Graphics.FillEllipse($trackBrush,1,1,$h,$h)
+            $e.Graphics.FillEllipse($trackBrush,$sender.Width-$h-1,1,$h,$h)
+
+            $knob=16
+            $x=if($sender.Checked){$sender.Width-$knob-4}else{4}
+            $y=[int](($sender.Height-$knob)/2)
+            $e.Graphics.FillEllipse($knobBrush,$x,$y,$knob,$knob)
+        }finally{
+            $trackBrush.Dispose()
+            $knobBrush.Dispose()
+        }
+    })
+    $toggle.Add_CheckedChanged({$this.Invalidate()})
+    return $toggle
 }

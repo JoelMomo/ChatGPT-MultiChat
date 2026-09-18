@@ -28,6 +28,9 @@ $script:maintenanceProcess=$null
 $script:maintenanceResultFile=$null
 $script:dcOnline=$false
 $script:dcChecked=$false
+$script:dcDesiredOnline=$true
+$script:dcConnecting=$true
+$script:suppressConnectionToggle=$false
 $script:gitCache=@{}
 $script:cleanupCandidates=@()
 $script:cachedSafe=0
@@ -48,22 +51,61 @@ function Get-RemoteCommanderProcess {
 }
 
 function Start-RemoteCommanderHidden {
-    if(-not(Get-Command npx.cmd -ErrorAction SilentlyContinue)){return $false}
+    if(-not(Get-Command npx.cmd -ErrorAction SilentlyContinue)){
+        $script:dcConnecting=$false
+        return $false
+    }
     $log=Join-Path $root 'state\logs\desktop-commander.log'
     $cmd='npx.cmd @wonderwhy-er/desktop-commander@latest remote >> "'+$log+'" 2>&1'
     Start-Process cmd.exe -ArgumentList '/c',$cmd -WindowStyle Hidden|Out-Null
     $script:lastRemoteRestart=Get-Date
     $script:dcChecked=$false
+    $script:dcOnline=$false
+    $script:dcConnecting=$true
     $script:lastMaintenanceStart=[datetime]::MinValue
     return $true
 }
 
-function Restart-RemoteCommander {
+function Stop-RemoteCommander {
     foreach($proc in @(Get-RemoteCommanderProcess)){
         Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
     }
-    Start-Sleep -Milliseconds 500
-    Start-RemoteCommanderHidden|Out-Null
+    $script:dcOnline=$false
+    $script:dcChecked=$true
+    $script:dcConnecting=$false
+    $script:lastMaintenanceStart=[datetime]::MinValue
+}
+
+function Set-DesktopCommanderEnabled {
+    param(
+        [Parameter(Mandatory)][bool]$Enabled,
+        [switch]$ForceRestart
+    )
+
+    $script:dcDesiredOnline=$Enabled
+    if(-not $Enabled){
+        Stop-RemoteCommander
+        return
+    }
+
+    if($ForceRestart){Stop-RemoteCommander}
+    $existing=@(Get-RemoteCommanderProcess)
+    if($existing.Count -gt 0){
+        $script:dcOnline=$true
+        $script:dcChecked=$true
+        $script:dcConnecting=$false
+        $script:lastMaintenanceStart=[datetime]::MinValue
+        return
+    }
+
+    [void](Start-RemoteCommanderHidden)
+}
+
+function Restart-RemoteCommander {
+    $script:suppressConnectionToggle=$true
+    if($connectionToggle){$connectionToggle.Checked=$true}
+    $script:suppressConnectionToggle=$false
+    Set-DesktopCommanderEnabled -Enabled $true -ForceRestart
 }
 
 function Get-GitSnapshot {
@@ -100,8 +142,15 @@ function Complete-MaintenanceWorker {
                 if($id){$nextGit[$id]=$item}
             }
             $script:gitCache=$nextGit
-            $script:dcOnline=[bool]$result.desktopCommanderOnline
-            $script:dcChecked=$true
+            if($script:dcDesiredOnline){
+                $script:dcOnline=[bool]$result.desktopCommanderOnline
+                $script:dcChecked=$true
+                $script:dcConnecting=(-not $script:dcOnline -and ((Get-Date)-$script:lastRemoteRestart).TotalSeconds -lt 12)
+            }else{
+                $script:dcOnline=$false
+                $script:dcChecked=$true
+                $script:dcConnecting=$false
+            }
         }catch{}
     }
 
@@ -314,8 +363,8 @@ function Refresh-Dashboard {
     }
 
     $sessions=@(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck|Sort-Object slot)
-    if($script:dcChecked -and -not $script:dcOnline -and (($now-$script:lastRemoteRestart).TotalSeconds -ge 10)){
-        Start-RemoteCommanderHidden|Out-Null
+    if($script:dcDesiredOnline -and $script:dcChecked -and -not $script:dcOnline -and (($now-$script:lastRemoteRestart).TotalSeconds -ge 10)){
+        [void](Start-RemoteCommanderHidden)
     }
 
     [void](Complete-WorktreeScan)
@@ -326,8 +375,23 @@ function Refresh-Dashboard {
     }
 
     $working=Update-SessionRows -Sessions $sessions
-    $dc=if(-not $script:dcChecked){'CHECKING'}elseif($script:dcOnline){'ONLINE'}else{'RECONNECTING'}
-    $dcTone=if(-not $script:dcChecked){'Neutral'}elseif($script:dcOnline){'Good'}else{'Warn'}
+    if(-not $script:dcDesiredOnline){
+        $dc='OFFLINE'
+        $dcTone='Bad'
+        $dcColor=$script:UiColors.Bad
+    }elseif($script:dcOnline){
+        $dc='ONLINE'
+        $dcTone='Good'
+        $dcColor=$script:UiColors.Good
+    }elseif(-not $script:dcChecked -or $script:dcConnecting){
+        $dc='CONNECTING'
+        $dcTone='Warn'
+        $dcColor=$script:UiColors.Warn
+    }else{
+        $dc='OFFLINE'
+        $dcTone='Bad'
+        $dcColor=$script:UiColors.Bad
+    }
 
     Set-MetricCard $dcCard $dc $dcTone
     Set-MetricCard $chatCard "$($sessions.Count)/$($cfg.maxSlots)" 'Neutral'
@@ -348,13 +412,15 @@ function Refresh-Dashboard {
     }
 
     $connectionLabel.Text="Desktop Commander  $dc"
-    $connectionLabel.ForeColor=if(-not $script:dcChecked){
-        $script:UiColors.Muted
-    }elseif($script:dcOnline){
-        $script:UiColors.Good
-    }else{
-        $script:UiColors.Warn
+    $connectionLabel.ForeColor=$dcColor
+    Set-StatusLed -Led $connectionLed -Color $dcColor
+
+    if($connectionToggle.Checked -ne $script:dcDesiredOnline){
+        $script:suppressConnectionToggle=$true
+        $connectionToggle.Checked=$script:dcDesiredOnline
+        $script:suppressConnectionToggle=$false
     }
+
     $notify.Text=("MultiChat: {0} chats | {1} working" -f $sessions.Count,$working)
     Update-History
 }
@@ -393,30 +459,57 @@ $subtitle.AutoSize=$true
 $subtitle.Location=New-Object Drawing.Point(2,39)
 $header.Controls.Add($subtitle)
 
+$rightHeader=New-Object Windows.Forms.Panel
+$rightHeader.Dock='Right'
+$rightHeader.Width=390
+$rightHeader.Height=38
+$rightHeader.BackColor=$script:UiColors.Bg
+$header.Controls.Add($rightHeader)
+
+$connectionPanel=New-Object Windows.Forms.Panel
+$connectionPanel.Location=New-Object Drawing.Point(0,0)
+$connectionPanel.Size=New-Object Drawing.Size(310,36)
+$connectionPanel.BackColor=$script:UiColors.Bg
+$rightHeader.Controls.Add($connectionPanel)
+
+$connectionLed=New-StatusLed -Size 10
+$connectionLed.Location=New-Object Drawing.Point(0,12)
+$connectionPanel.Controls.Add($connectionLed)
+
 $connectionLabel=New-Object Windows.Forms.Label
 $connectionLabel.AutoSize=$true
 $connectionLabel.Font=New-Object Drawing.Font('Segoe UI Semibold',9)
-$connectionLabel.Anchor='Top,Right'
-$connectionLabel.Location=New-Object Drawing.Point(840,12)
-$header.Controls.Add($connectionLabel)
+$connectionLabel.Location=New-Object Drawing.Point(18,8)
+$connectionPanel.Controls.Add($connectionLabel)
 
-$windowControls=New-Object Windows.Forms.FlowLayoutPanel
-$windowControls.Dock='Right'
-$windowControls.Width=78
-$windowControls.Height=36
-$windowControls.WrapContents=$false
-$windowControls.FlowDirection='LeftToRight'
+$connectionToggle=New-ToggleSwitch -Checked $true
+$connectionToggle.Location=New-Object Drawing.Point(260,7)
+$connectionPanel.Controls.Add($connectionToggle)
+
+$connectionToolTip=New-Object Windows.Forms.ToolTip
+$connectionToolTip.SetToolTip($connectionToggle,'Enable or disable Desktop Commander')
+
+$windowControls=New-Object Windows.Forms.Panel
+$windowControls.Location=New-Object Drawing.Point(314,0)
+$windowControls.Size=New-Object Drawing.Size(76,36)
 $windowControls.BackColor=$script:UiColors.Bg
-$windowControls.Padding=New-Object Windows.Forms.Padding(4,0,0,0)
-$header.Controls.Add($windowControls)
+$rightHeader.Controls.Add($windowControls)
 
 $minimizeButton=New-WindowButton -Text ([char]0x2212)
+$minimizeButton.Location=New-Object Drawing.Point(4,0)
 $minimizeButton.Add_Click({$form.WindowState='Minimized'})
 $windowControls.Controls.Add($minimizeButton)
 
 $closeButton=New-WindowButton -Text ([char]0x00D7) -CloseButton
+$closeButton.Location=New-Object Drawing.Point(40,0)
 $closeButton.Add_Click({$form.Close()})
 $windowControls.Controls.Add($closeButton)
+
+$connectionToggle.Add_CheckedChanged({
+    if($script:suppressConnectionToggle){return}
+    Set-DesktopCommanderEnabled -Enabled ([bool]$connectionToggle.Checked)
+    Refresh-Dashboard
+})
 
 Enable-WindowDrag -Control $header -Form $form
 Enable-WindowDrag -Control $title -Form $form
