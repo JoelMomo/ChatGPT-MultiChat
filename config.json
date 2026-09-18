@@ -2,16 +2,14 @@
   "schemaVersion": 3,
   "maxSlots": 8,
   "refreshSeconds": 1,
-  "remoteCheckSeconds": 10,
+  "maintenanceRefreshSeconds": 15,
   "historyRefreshSeconds": 5,
   "cleanupScanSeconds": 30,
-  "expiryCheckSeconds": 10,
   "abandonedAfterMinutes": 3,
   "cleanExpireMinutes": 10,
   "dirtyExpireMinutes": 20,
   "portRangeStart": 3000,
   "portRangeCount": 100,
-  "gitRefreshSeconds": 10,
   "historyLimit": 50,
   "resourceRules": [
     {

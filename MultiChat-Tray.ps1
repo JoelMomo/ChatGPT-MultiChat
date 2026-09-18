@@ -18,12 +18,13 @@ if(-not $createdNew){
 
 $script:exiting=$false
 $script:lastRemoteRestart=[datetime]::MinValue
-$script:lastRemoteCheck=[datetime]::MinValue
-$script:lastSessionValidation=[datetime]::MinValue
-$script:lastExpiryCheck=[datetime]::MinValue
+$script:lastMaintenanceStart=[datetime]::MinValue
 $script:lastHistoryCheck=[datetime]::MinValue
 $script:lastCleanupScanStart=[datetime]::MinValue
-$script:remoteProcesses=@()
+$script:maintenanceProcess=$null
+$script:maintenanceResultFile=$null
+$script:dcOnline=$false
+$script:dcChecked=$false
 $script:gitCache=@{}
 $script:cleanupCandidates=@()
 $script:cachedSafe=0
@@ -49,6 +50,8 @@ function Start-RemoteCommanderHidden {
     $cmd='npx.cmd @wonderwhy-er/desktop-commander@latest remote >> "'+$log+'" 2>&1'
     Start-Process cmd.exe -ArgumentList '/c',$cmd -WindowStyle Hidden|Out-Null
     $script:lastRemoteRestart=Get-Date
+    $script:dcChecked=$false
+    $script:lastMaintenanceStart=[datetime]::MinValue
     return $true
 }
 
@@ -60,18 +63,52 @@ function Restart-RemoteCommander {
     Start-RemoteCommanderHidden|Out-Null
 }
 
-function Get-GitCached {
+function Get-GitSnapshot {
     param($Session)
-    $originRepo=[string](Get-ChatProp $Session 'originRepo' '')
-    if(-not $originRepo){return $null}
     $id=[string](Get-ChatProp $Session 'id' '')
-    $cached=$script:gitCache[$id]
-    $now=Get-Date
-    $maxAge=[int](Get-ChatProp $cfg 'gitRefreshSeconds' 10)
-    if($cached -and (($now-$cached.at).TotalSeconds -lt $maxAge)){return $cached.value}
-    $value=Get-ChatGitSummary $Session
-    $script:gitCache[$id]=@{at=$now;value=$value}
-    return $value
+    if(-not $id){return $null}
+    return $script:gitCache[$id]
+}
+
+function Start-MaintenanceWorker {
+    if($script:maintenanceProcess -and -not $script:maintenanceProcess.HasExited){return}
+
+    $result=Join-Path $stateCacheRoot 'maintenance.json'
+    Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
+    $args=@(
+        '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
+        '-File',(Join-Path $root 'MultiChat-Maintenance.ps1'),
+        '-ResultFile',$result
+    )
+    $script:maintenanceResultFile=$result
+    $script:maintenanceProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
+    $script:lastMaintenanceStart=Get-Date
+}
+
+function Complete-MaintenanceWorker {
+    if(-not $script:maintenanceProcess -or -not $script:maintenanceProcess.HasExited){return $false}
+
+    if($script:maintenanceResultFile -and (Test-Path -LiteralPath $script:maintenanceResultFile)){
+        try{
+            $result=Get-Content -LiteralPath $script:maintenanceResultFile -Raw|ConvertFrom-Json
+            $nextGit=@{}
+            foreach($item in $result.git){
+                $id=[string](Get-ChatProp $item 'id' '')
+                if($id){$nextGit[$id]=$item}
+            }
+            $script:gitCache=$nextGit
+            $script:dcOnline=[bool]$result.desktopCommanderOnline
+            $script:dcChecked=$true
+        }catch{}
+    }
+
+    $script:maintenanceProcess.Dispose()
+    $script:maintenanceProcess=$null
+    if($script:maintenanceResultFile){
+        Remove-Item -LiteralPath $script:maintenanceResultFile -Force -ErrorAction SilentlyContinue
+    }
+    $script:maintenanceResultFile=$null
+    return $true
 }
 
 function Start-WorktreeScan {
@@ -164,7 +201,7 @@ function Update-SessionRows {
             $working++
         }
 
-        $git=Get-GitCached $s
+        $git=Get-GitSnapshot $s
         $gitText=if($git -and $git.text){$git.text}elseif($git -and $git.hasGit){'clean'}else{''}
         $port=Get-ChatProp $s 'devPort' ''
         $warning=''
@@ -218,37 +255,30 @@ function Update-History {
 
 function Refresh-Dashboard {
     $now=Get-Date
-    $expiryInterval=[int](Get-ChatProp $cfg 'expiryCheckSeconds' 10)
-    if(($now-$script:lastExpiryCheck).TotalSeconds -ge $expiryInterval){
-        Expire-IdleManagedChatSessions|Out-Null
-        $script:lastExpiryCheck=$now
+
+    [void](Complete-MaintenanceWorker)
+    $maintenanceInterval=[int](Get-ChatProp $cfg 'maintenanceRefreshSeconds' 15)
+    if(-not $script:maintenanceProcess -and (($now-$script:lastMaintenanceStart).TotalSeconds -ge $maintenanceInterval)){
+        Start-MaintenanceWorker
     }
 
-    $processInterval=[int](Get-ChatProp $cfg 'remoteCheckSeconds' 10)
-    $validateSessions=(($now-$script:lastSessionValidation).TotalSeconds -ge $processInterval)
-    $sessions=if($validateSessions){
-        $script:lastSessionValidation=$now
-        @(Get-ManagedChatSessions -ActiveOnly|Sort-Object slot)
-    }else{
-        @(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck|Sort-Object slot)
+    $sessions=@(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck|Sort-Object slot)
+    if($script:dcChecked -and -not $script:dcOnline -and (($now-$script:lastRemoteRestart).TotalSeconds -ge 10)){
+        Start-RemoteCommanderHidden|Out-Null
     }
-
-    if(($now-$script:lastRemoteCheck).TotalSeconds -ge $processInterval){
-        $script:remoteProcesses=@(Get-RemoteCommanderProcess)
-        $script:lastRemoteCheck=$now
-    }
-    $remote=@($script:remoteProcesses)
-    if(-not $remote.Count -and ($now-$script:lastRemoteRestart).TotalSeconds -ge 10){Start-RemoteCommanderHidden|Out-Null}
 
     [void](Complete-WorktreeScan)
     [void](Complete-WorktreeCleanup)
     $cleanupInterval=[int](Get-ChatProp $cfg 'cleanupScanSeconds' 30)
-    if(-not $script:cleanupScanProcess -and -not $script:cleanupProcess -and (($now-$script:lastCleanupScanStart).TotalSeconds -ge $cleanupInterval)){Start-WorktreeScan}
+    if(-not $script:cleanupScanProcess -and -not $script:cleanupProcess -and (($now-$script:lastCleanupScanStart).TotalSeconds -ge $cleanupInterval)){
+        Start-WorktreeScan
+    }
 
     $working=Update-SessionRows -Sessions $sessions
-    $dc=if($remote.Count){'ONLINE'}else{'RECONNECTING'}
+    $dc=if(-not $script:dcChecked){'CHECKING'}elseif($script:dcOnline){'ONLINE'}else{'RECONNECTING'}
+    $dcTone=if(-not $script:dcChecked){'Neutral'}elseif($script:dcOnline){'Good'}else{'Warn'}
 
-    Set-MetricCard $dcCard $dc $(if($remote.Count){'Good'}else{'Warn'})
+    Set-MetricCard $dcCard $dc $dcTone
     Set-MetricCard $chatCard "$($sessions.Count)/$($cfg.maxSlots)" 'Neutral'
     Set-MetricCard $workCard "$working" $(if($working){'Warn'}else{'Good'})
     Set-MetricCard $treeCard "$($script:cachedSafe) safe / $($script:cachedPending) pending" $(if($script:cachedPending){'Warn'}else{'Good'})
@@ -267,7 +297,13 @@ function Refresh-Dashboard {
     }
 
     $connectionLabel.Text="Desktop Commander  $dc"
-    $connectionLabel.ForeColor=if($remote.Count){$script:UiColors.Good}else{$script:UiColors.Warn}
+    $connectionLabel.ForeColor=if(-not $script:dcChecked){
+        $script:UiColors.Muted
+    }elseif($script:dcOnline){
+        $script:UiColors.Good
+    }else{
+        $script:UiColors.Warn
+    }
     $notify.Text=("MultiChat: {0} chats | {1} working" -f $sessions.Count,$working)
     Update-History
 }
@@ -460,6 +496,7 @@ $form.Add_FormClosing({
 
 $miExit.Add_Click({
     $script:exiting=$true
+    if($script:maintenanceProcess -and -not $script:maintenanceProcess.HasExited){$script:maintenanceProcess.Kill()}
     if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){$script:cleanupScanProcess.Kill()}
     if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){$script:cleanupProcess.Kill()}
     $notify.Visible=$false
@@ -473,6 +510,7 @@ $timer.Add_Tick({Refresh-Dashboard})
 $form.Add_ResizeBegin({$timer.Stop()})
 $form.Add_ResizeEnd({Refresh-Dashboard;$timer.Start()})
 
+Start-MaintenanceWorker
 Start-WorktreeScan
 Refresh-Dashboard
 $timer.Start()

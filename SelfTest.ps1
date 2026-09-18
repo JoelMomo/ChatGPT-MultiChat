@@ -10,7 +10,8 @@ foreach($name in @('git.exe','npx.cmd','powershell.exe')){
 
 foreach($required in @(
     'ChatMulti.psm1','ChatMulti.Advanced.ps1',
-    'MultiChat-Tray.ps1','MultiChat.UI.ps1','Cleanup-Worktrees.ps1',
+    'MultiChat-Tray.ps1','MultiChat.UI.ps1','MultiChat-Maintenance.ps1',
+    'Cleanup-Worktrees.ps1',
     'config.json','PROMPT-FOR-CHATGPT.txt'
 )){
     if(-not(Test-Path -LiteralPath (Join-Path $root $required))){
@@ -35,9 +36,8 @@ try{
 
     if([int]$cfg.maxSlots -lt 2){$errors+='Invalid maxSlots value'}
     if([int]$cfg.refreshSeconds -lt 1){$errors+='refreshSeconds is too low'}
-    if([int]$cfg.remoteCheckSeconds -lt 5){$errors+='remoteCheckSeconds is too low'}
+    if([int]$cfg.maintenanceRefreshSeconds -lt 5){$errors+='maintenanceRefreshSeconds is too low'}
     if([int]$cfg.cleanupScanSeconds -lt 10){$errors+='cleanupScanSeconds is too low'}
-    if([int]$cfg.gitRefreshSeconds -lt 5){$errors+='gitRefreshSeconds is too low'}
 
     $projectsPath=Join-Path $root 'state\projects.json'
     $hadProjects=Test-Path -LiteralPath $projectsPath

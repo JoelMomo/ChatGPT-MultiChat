@@ -54,7 +54,7 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Refreshed dashboard using Segoe UI, flatter controls, status cards, and clearer visual hierarchy.
 - Worktree scanning and cleanup run in hidden worker processes instead of blocking the UI thread.
 - Cleanup uses cached candidates and revalidates only worktrees that are about to be removed.
-- Git, history, Desktop Commander, expiry, and cleanup checks now run at independent cadences.
+- Git summaries, session expiry, liveness validation, and Desktop Commander health checks run in a hidden maintenance worker instead of the UI thread.
 - Grid cells are updated only when their displayed value changes.
 - Expensive Git checks are avoided during ordinary one-second status refreshes.
 - The dashboard reads active sessions through the eight slot files instead of scanning the full session history on every refresh.
@@ -136,11 +136,10 @@ Closing the dashboard window does **not** stop the agent. It remains in the Wind
 
 The visible chat state still refreshes quickly, but expensive work is decoupled from that timer:
 
-- Git summaries are cached and refreshed less often than chat state.
-- session-expiry checks run independently from the visual refresh;
-- Desktop Commander process detection runs on its own interval;
+- the one-second UI refresh reads only the active slot index and cached values;
+- Git summaries, session expiry, PID validation, and Desktop Commander process detection run in a hidden maintenance worker;
 - recent history is refreshed separately;
-- worktree scanning runs in a hidden PowerShell worker;
+- worktree scanning runs in its own hidden worker;
 - worktree cleanup also runs in a hidden worker;
 - refresh pauses while the window is moved or resized.
 
@@ -200,17 +199,15 @@ The main settings live in `config.json`:
 | Setting | Default | Purpose |
 |---|---:|---|
 | `maxSlots` | 8 | Maximum simultaneous managed chats |
-| `refreshSeconds` | 1 | Chat-status refresh interval |
+| `refreshSeconds` | 1 | Lightweight chat-status/UI refresh interval |
+| `maintenanceRefreshSeconds` | 15 | Background Git, expiry, liveness, and Desktop Commander maintenance interval |
+| `historyRefreshSeconds` | 5 | Recent-history refresh interval |
+| `cleanupScanSeconds` | 30 | Background worktree-scan interval |
 | `abandonedAfterMinutes` | 3 | Time before a READY session is marked abandoned |
 | `cleanExpireMinutes` | 10 | Expiry for clean idle sessions |
 | `dirtyExpireMinutes` | 20 | Expiry for idle sessions with local changes |
 | `portRangeStart` | 3000 | First reservable development port |
 | `portRangeCount` | 100 | Number of ports in the reservation pool |
-| `gitRefreshSeconds` | 10 | Git-summary refresh interval |
-| `remoteCheckSeconds` | 10 | Desktop Commander process-check interval |
-| `cleanupScanSeconds` | 30 | Background worktree-scan interval |
-| `historyRefreshSeconds` | 5 | Recent-history refresh interval |
-| `expiryCheckSeconds` | 10 | Idle-session expiry-check interval |
 | `historyLimit` | 50 | Maximum stored history entries |
 
 Resource-lock rules are also defined in `config.json`.
@@ -221,8 +218,9 @@ Resource-lock rules are also defined in `config.json`.
 |---|---|
 | `ChatMulti.psm1` | Session-management core and module loader |
 | `ChatMulti.Advanced.ps1` | Configuration cache, ports, history, project resolution, Git/status, cleanup, idle-state, conflicts, and reservations |
-| `MultiChat-Tray.ps1` | Dashboard orchestration, background workers, and system-tray agent |
+| `MultiChat-Tray.ps1` | Lightweight dashboard orchestration and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
+| `MultiChat-Maintenance.ps1` | Background Git, expiry, liveness, and Desktop Commander maintenance worker |
 | `Start-McpChatSession.ps1` | Starts and owns one persistent managed chat session |
 | `Setup.cmd` / `Setup.ps1` | Local setup and desktop shortcut |
 | `config.json` | Portable configuration |
