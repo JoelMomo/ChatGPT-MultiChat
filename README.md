@@ -56,6 +56,7 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Clarified Git tooltips: for example, `23 new` now explains that those files are not tracked by Git.
 - Finished `SAFE` worktrees are cleaned automatically in the background instead of continuously accumulating.
 - Auto-clean skips worktrees whose owner process is still alive and keeps manual cleanup as a fallback.
+- Stale folders that no longer resolve to their own Git worktree are classified as `NOT_A_WORKTREE` and retained instead of being deleted without verifiable Git state.
 
 ## What's new in v2.1.0
 

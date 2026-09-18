@@ -337,6 +337,18 @@ function Get-ChatGitSummary {
     }
 
     try {
+        $topLevelOutput = @(& git -C $workspace rev-parse --show-toplevel 2>$null)
+        $topLevelExitCode = $LASTEXITCODE
+        $topLevel = $topLevelOutput | Select-Object -First 1
+        if ($topLevelExitCode -ne 0 -or -not $topLevel) { throw 'Not a Git worktree' }
+
+        $trimSeparators = [char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+        $workspaceFull = [IO.Path]::GetFullPath($workspace).Replace([IO.Path]::AltDirectorySeparatorChar,[IO.Path]::DirectorySeparatorChar).TrimEnd($trimSeparators)
+        $topLevelFull = [IO.Path]::GetFullPath(([string]$topLevel).Trim()).Replace([IO.Path]::AltDirectorySeparatorChar,[IO.Path]::DirectorySeparatorChar).TrimEnd($trimSeparators)
+        if (-not [string]::Equals($workspaceFull,$topLevelFull,[StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Workspace resolves to a parent Git repository'
+        }
+
         $lines = @(& git -C $workspace status --porcelain --untracked-files=all 2>$null)
         if ($LASTEXITCODE -ne 0) { throw 'Not a Git worktree' }
     } catch {
@@ -355,8 +367,10 @@ function Get-ChatGitSummary {
 
     if ($branch -and $originRepo -and (Test-Path -LiteralPath $originRepo)) {
         try {
-            $counts = (& git -C $originRepo rev-list --left-right --count "$branch...HEAD" 2>$null | Select-Object -First 1)
-            if ($LASTEXITCODE -eq 0 -and $counts) {
+            $countOutput = @(& git -C $originRepo rev-list --left-right --count "$branch...HEAD" 2>$null)
+            $countExitCode = $LASTEXITCODE
+            $counts = $countOutput | Select-Object -First 1
+            if ($countExitCode -eq 0 -and $counts) {
                 $parts = $counts -split '\s+'
                 if ($parts.Count -ge 2) {
                     $ahead = [int]$parts[0]
@@ -388,7 +402,17 @@ function Get-WorktreeCleanupCandidateState {
 
     $git = Get-ChatGitSummary $Session
     $safe = $git.hasGit -and -not $git.dirty -and ($git.ahead -eq 0)
-    $reason = if ($safe) {'SAFE'} elseif ($git.dirty) {'DIRTY'} elseif ($git.ahead -gt 0) {'UNMERGED_COMMITS'} else {'UNKNOWN'}
+    $reason = if ($safe) {
+        'SAFE'
+    } elseif (-not $git.hasGit) {
+        'NOT_A_WORKTREE'
+    } elseif ($git.dirty) {
+        'DIRTY'
+    } elseif ($git.ahead -gt 0) {
+        'UNMERGED_COMMITS'
+    } else {
+        'UNKNOWN'
+    }
 
     return [pscustomobject]@{
         id = [string](Get-ChatProp $Session 'id' '')
@@ -467,17 +491,46 @@ function Invoke-SafeWorktreeCleanup {
         $originRepo = [string](Get-ChatProp $candidate 'originRepo' '')
         if (-not $workspace -or -not $originRepo) { continue }
 
-        & git -C $originRepo worktree remove --force $workspace 2>$null | Out-Null
+        $oldErrorActionPreference = $ErrorActionPreference
+        $removeExitCode = 1
+        try {
+            $ErrorActionPreference = 'Continue'
+            & git -C $originRepo worktree remove --force $workspace 2>$null | Out-Null
+            $removeExitCode = $LASTEXITCODE
+        } catch {
+            $removeExitCode = 1
+        } finally {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
+
+        if ($removeExitCode -ne 0) { continue }
+
         if (-not (Test-Path -LiteralPath $workspace)) {
             $branch = [string](Get-ChatProp $candidate 'branch' '')
-            if ($branch) { & git -C $originRepo branch -D $branch 2>$null | Out-Null }
+            if ($branch) {
+                $oldErrorActionPreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = 'Continue'
+                    & git -C $originRepo branch -D $branch 2>$null | Out-Null
+                } catch {
+                } finally {
+                    $ErrorActionPreference = $oldErrorActionPreference
+                }
+            }
             $reposToPrune[$originRepo] = $true
             $removed += $candidate
         }
     }
 
     foreach ($repo in @($reposToPrune.Keys)) {
-        & git -C $repo worktree prune 2>$null | Out-Null
+        $oldErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & git -C $repo worktree prune 2>$null | Out-Null
+        } catch {
+        } finally {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
     }
     return $removed
 }

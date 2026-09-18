@@ -44,6 +44,7 @@ if (-not $Quiet) {
 
 $removed = @()
 $applyCleanup = ($Apply -or $AutoCleanSafe)
+$safeBeforeCount = $safe.Count
 if ($applyCleanup -and $safe.Count) {
     $removed = @(Invoke-SafeWorktreeCleanup -Candidates $safe)
     if (-not $Quiet) {
@@ -62,7 +63,7 @@ if ($applyCleanup -and $safe.Count) {
     Write-Host 'Use -Apply to remove ONLY the entries marked SAFE.' -ForegroundColor DarkGray
 }
 
-$failedCount = if($applyCleanup -and -not $AutoCleanSafe){[Math]::Max(0,$safe.Count-$removed.Count)}else{0}
+$failedCount = if($applyCleanup){[Math]::Max(0,$safeBeforeCount-$removed.Count)}else{0}
 
 $result = [ordered]@{
     scannedAt = (Get-Date).ToString('o')

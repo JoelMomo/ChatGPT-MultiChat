@@ -104,6 +104,20 @@ try{
     $windowButton.Dispose()
     $testForm.Dispose()
 
+    $nestedNotWorktree=Join-Path $root 'state\selftest-not-worktree'
+    try{
+        New-Item -ItemType Directory -Path $nestedNotWorktree -Force|Out-Null
+        Set-Content (Join-Path $nestedNotWorktree 'probe.txt') 'not a worktree' -Encoding ascii
+        $nestedGit=Get-ChatGitSummary ([pscustomobject]@{
+            workspace=$nestedNotWorktree;originRepo=$root;branch=''
+        })
+        if($nestedGit.hasGit){
+            $errors+='A nested plain directory was incorrectly detected as a Git worktree'
+        }
+    }finally{
+        Remove-Item $nestedNotWorktree -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     $cleanupBase=Join-Path $root 'state\selftest-cleanup'
     try{
         $repo=Join-Path $cleanupBase 'repo'
