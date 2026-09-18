@@ -1,24 +1,36 @@
+$script:ChatConfigCache = $null
+$script:ChatConfigStamp = [datetime]::MinValue
+
 function Get-ChatConfig {
     $path = Join-Path $script:ManagerRoot 'config.json'
     if (-not (Test-Path -LiteralPath $path)) {
-        throw "Falta config.json en $($script:ManagerRoot)"
+        throw "Missing config.json in $($script:ManagerRoot)"
     }
-    return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+
+    $stamp = (Get-Item -LiteralPath $path).LastWriteTimeUtc
+    if ($script:ChatConfigCache -and $script:ChatConfigStamp -eq $stamp) {
+        return $script:ChatConfigCache
+    }
+
+    $script:ChatConfigCache = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $script:ChatConfigStamp = $stamp
+    return $script:ChatConfigCache
 }
 
 function Initialize-AdvancedChatState {
-    foreach ($p in @(
+    foreach ($path in @(
         (Join-Path $script:StateRoot 'ports'),
         (Join-Path $script:StateRoot 'logs')
     )) {
-        if (-not (Test-Path -LiteralPath $p)) {
-            New-Item -ItemType Directory -Path $p -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $path)) {
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
         }
     }
 }
 
 function Get-ConfiguredResourceNames {
     param([Parameter(Mandatory)][string]$Line)
+
     $cfg = Get-ChatConfig
     $names = @()
     foreach ($rule in @($cfg.resourceRules)) {
@@ -31,17 +43,23 @@ function Get-ConfiguredResourceNames {
 
 function Test-ChatPortListening {
     param([Parameter(Mandatory)][int]$Port)
+
     try {
-        return $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1)
+        return $null -ne (
+            Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        )
     } catch {
         return $false
     }
 }
+
 function Claim-ChatPort {
     param(
         [Parameter(Mandatory)][string]$SessionId,
         [Parameter(Mandatory)][int]$Slot
     )
+
     Initialize-AdvancedChatState
     $cfg = Get-ChatConfig
     $portRoot = Join-Path $script:StateRoot 'ports'
@@ -50,31 +68,57 @@ function Claim-ChatPort {
 
     for ($port = $start; $port -lt ($start + $count); $port++) {
         $file = Join-Path $portRoot ("port-{0}.json" -f $port)
+
         if (Test-Path -LiteralPath $file) {
             $old = Read-ChatJson $file
-            if ($old -and (Test-ChatProcessAlive ([int]$old.pid))) { continue }
+            if ($old -and (Test-ChatProcessAlive ([int](Get-ChatProp $old 'pid' 0)))) {
+                continue
+            }
             Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
         }
-        if (Test-ChatPortListening -Port $port) { continue }
+
+        if (Test-ChatPortListening -Port $port) {
+            continue
+        }
 
         try {
-            $payload = @{sessionId=$SessionId;slot=$Slot;pid=$PID;port=$port;claimedAt=(Get-Date).ToString('o')}
+            $payload = @{
+                sessionId = $SessionId
+                slot = $Slot
+                pid = $PID
+                port = $port
+                claimedAt = (Get-Date).ToString('o')
+            }
             $bytes = [Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress))
-            $fs = [IO.File]::Open($file,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-            try { $fs.Write($bytes,0,$bytes.Length) } finally { $fs.Dispose() }
+            $stream = [IO.File]::Open(
+                $file,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+            )
+            try {
+                $stream.Write($bytes,0,$bytes.Length)
+            } finally {
+                $stream.Dispose()
+            }
             return $port
         } catch {}
     }
+
     return $null
 }
 
 function Release-ChatPort {
     param([Parameter(Mandatory)][string]$SessionId)
+
     $portRoot = Join-Path $script:StateRoot 'ports'
-    if (-not (Test-Path -LiteralPath $portRoot)) { return }
+    if (-not (Test-Path -LiteralPath $portRoot)) {
+        return
+    }
+
     foreach ($file in Get-ChildItem -LiteralPath $portRoot -Filter 'port-*.json' -File -ErrorAction SilentlyContinue) {
-        $p = Read-ChatJson $file.FullName
-        if ($p -and $p.sessionId -eq $SessionId) {
+        $reservation = Read-ChatJson $file.FullName
+        if ($reservation -and [string](Get-ChatProp $reservation 'sessionId' '') -eq $SessionId) {
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
         }
     }
@@ -82,20 +126,69 @@ function Release-ChatPort {
 
 function Get-RegisteredChatProjects {
     $path = Join-Path $script:StateRoot 'projects.json'
-    if (-not (Test-Path -LiteralPath $path)) { return @() }
-    try { return @(Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) }
-    catch { return @() }
+    if (-not (Test-Path -LiteralPath $path)) {
+        return @()
+    }
+
+    try {
+        $parsed = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    } catch {
+        return @()
+    }
+
+    $valid = @()
+    foreach ($item in $parsed) {
+        $itemPath = [string](Get-ChatProp $item 'path' '')
+        if ([string]::IsNullOrWhiteSpace($itemPath)) {
+            continue
+        }
+
+        $itemName = [string](Get-ChatProp $item 'name' '')
+        if ([string]::IsNullOrWhiteSpace($itemName)) {
+            $itemName = Split-Path $itemPath -Leaf
+        }
+
+        $valid += [pscustomobject]@{
+            name = $itemName
+            path = $itemPath
+            lastUsed = [string](Get-ChatProp $item 'lastUsed' '')
+        }
+    }
+
+    return $valid
 }
+
 function Register-ChatProject {
     param([Parameter(Mandatory)][string]$Path)
-    try { $root = (& git -C $Path rev-parse --show-toplevel 2>$null | Select-Object -First 1) } catch { $root = $null }
-    if (-not $root) { return }
+
+    try {
+        $root = (& git -C $Path rev-parse --show-toplevel 2>$null | Select-Object -First 1)
+    } catch {
+        $root = $null
+    }
+    if (-not $root) {
+        return
+    }
+
     $root = $root.Trim()
     $name = Split-Path $root -Leaf
-    $items = @(Get-RegisteredChatProjects | Where-Object { $_.path -ne $root })
-    $items += [pscustomobject]@{name=$name;path=$root;lastUsed=(Get-Date).ToString('o')}
+    $items = @(
+        Get-RegisteredChatProjects |
+        Where-Object { [string](Get-ChatProp $_ 'path' '') -ne $root }
+    )
+
+    $items += [pscustomobject]@{
+        name = $name
+        path = $root
+        lastUsed = (Get-Date).ToString('o')
+    }
+
     $target = Join-Path $script:StateRoot 'projects.json'
-    [IO.File]::WriteAllText($target,($items | Sort-Object name | ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText(
+        $target,
+        ($items | Sort-Object name | ConvertTo-Json -Depth 5),
+        (New-Object Text.UTF8Encoding($false))
+    )
 }
 
 function Resolve-ChatProjectPath {
@@ -103,19 +196,31 @@ function Resolve-ChatProjectPath {
         [string]$Task = '',
         [string]$CurrentPath = (Get-Location).Path
     )
+
     try {
         $root = (& git -C $CurrentPath rev-parse --show-toplevel 2>$null | Select-Object -First 1)
         if ($root) {
             $root = $root.Trim()
-            if ($root -ne $script:ManagerRoot) { return $root }
+            if ($root -ne $script:ManagerRoot) {
+                return $root
+            }
         }
     } catch {}
 
     $taskLower = $Task.ToLowerInvariant()
-    $matches = @(Get-RegisteredChatProjects | Where-Object {
-        $taskLower.Contains(([string]$_.name).ToLowerInvariant())
-    })
-    if ($matches.Count -eq 1 -and (Test-Path -LiteralPath $matches[0].path)) { return [string]$matches[0].path }
+    $matches = @(
+        Get-RegisteredChatProjects |
+        Where-Object {
+            $name = [string](Get-ChatProp $_ 'name' '')
+            $name -and $taskLower.Contains($name.ToLowerInvariant())
+        }
+    )
+    if ($matches.Count -eq 1) {
+        $matchPath = [string](Get-ChatProp $matches[0] 'path' '')
+        if ($matchPath -and (Test-Path -LiteralPath $matchPath)) {
+            return $matchPath
+        }
+    }
 
     $roots = @(
         (Join-Path $env:USERPROFILE 'Documents'),
@@ -125,63 +230,138 @@ function Resolve-ChatProjectPath {
 
     $candidates = @()
     foreach ($base in $roots) {
-        foreach ($dir in Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue) {
-            if ($taskLower.Contains($dir.Name.ToLowerInvariant())) { $candidates += $dir.FullName }
+        foreach ($directory in Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue) {
+            if ($taskLower.Contains($directory.Name.ToLowerInvariant())) {
+                $candidates += $directory.FullName
+            }
         }
     }
+
     $candidates = @($candidates | Select-Object -Unique)
-    if ($candidates.Count -eq 1) { return $candidates[0] }
+    if ($candidates.Count -eq 1) {
+        return $candidates[0]
+    }
     return $null
 }
 
 function Write-ChatHistory {
-    param($Session,[string]$Reason)
+    param(
+        [Parameter(Mandatory)]$Session,
+        [Parameter(Mandatory)][string]$Reason
+    )
+
     Initialize-AdvancedChatState
-    if ((Get-ChatProp $Session 'historyWritten' $false) -eq $true) { return }
-    $ended = Get-Date
-    try { $started = [DateTimeOffset]::Parse([string]$Session.startedAt).LocalDateTime } catch { $started = $ended }
-    $entry = [ordered]@{
-        id=$Session.id; slot=$Session.slot; project=$Session.project; task=$Session.task
-        reason=$Reason; status=$Session.status; startedAt=$Session.startedAt; endedAt=$ended.ToString('o')
-        durationSeconds=[int](($ended-$started).TotalSeconds); branch=$Session.branch
-        originRepo=$Session.originRepo; workspace=$Session.workspace; lastCommand=$Session.lastCommand
-        devPort=(Get-ChatProp $Session 'devPort' $null)
+    if ((Get-ChatProp $Session 'historyWritten' $false) -eq $true) {
+        return
     }
-    [IO.File]::AppendAllText((Join-Path $script:StateRoot 'history.jsonl'),(($entry|ConvertTo-Json -Compress)+"
-"),(New-Object Text.UTF8Encoding($false)))
+
+    $ended = Get-Date
+    try {
+        $started = [DateTimeOffset]::Parse(
+            [string](Get-ChatProp $Session 'startedAt' '')
+        ).LocalDateTime
+    } catch {
+        $started = $ended
+    }
+
+    $entry = [ordered]@{
+        id = [string](Get-ChatProp $Session 'id' '')
+        slot = Get-ChatProp $Session 'slot' $null
+        project = [string](Get-ChatProp $Session 'project' '')
+        task = [string](Get-ChatProp $Session 'task' '')
+        reason = $Reason
+        status = [string](Get-ChatProp $Session 'status' '')
+        startedAt = [string](Get-ChatProp $Session 'startedAt' '')
+        endedAt = $ended.ToString('o')
+        durationSeconds = [int](($ended-$started).TotalSeconds)
+        branch = [string](Get-ChatProp $Session 'branch' '')
+        originRepo = [string](Get-ChatProp $Session 'originRepo' '')
+        workspace = [string](Get-ChatProp $Session 'workspace' '')
+        lastCommand = [string](Get-ChatProp $Session 'lastCommand' '')
+        devPort = Get-ChatProp $Session 'devPort' $null
+    }
+
+    [IO.File]::AppendAllText(
+        (Join-Path $script:StateRoot 'history.jsonl'),
+        (($entry | ConvertTo-Json -Compress) + [Environment]::NewLine),
+        (New-Object Text.UTF8Encoding($false))
+    )
     $Session | Add-Member -NotePropertyName historyWritten -NotePropertyValue $true -Force
 }
 
 function Get-ChatHistory {
     param([int]$Limit = 20)
+
     $path = Join-Path $script:StateRoot 'history.jsonl'
-    if (-not (Test-Path -LiteralPath $path)) { return @() }
-    $lines = @(Get-Content -LiteralPath $path -Tail $Limit -ErrorAction SilentlyContinue)
-    return @($lines | ForEach-Object { try { $_ | ConvertFrom-Json } catch {} })
-}
-function Get-ChatGitSummary {
-    param($Session)
-    $workspace = [string]$Session.workspace
-    if (-not $workspace -or -not (Test-Path -LiteralPath $workspace)) {
-        return [pscustomobject]@{hasGit=$false;modified=0;untracked=0;ahead=0;behind=0;dirty=$false;text=''}
-    }
-    try { $gitRoot = (& git -C $workspace rev-parse --show-toplevel 2>$null | Select-Object -First 1) } catch { $gitRoot = $null }
-    if (-not $gitRoot) {
-        return [pscustomobject]@{hasGit=$false;modified=0;untracked=0;ahead=0;behind=0;dirty=$false;text=''}
+    if (-not (Test-Path -LiteralPath $path)) {
+        return @()
     }
 
-    $lines = @(& git -C $workspace status --porcelain 2>$null)
+    $lines = @(Get-Content -LiteralPath $path -Tail $Limit -ErrorAction SilentlyContinue)
+    return @(
+        $lines |
+        ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch {}
+        }
+    )
+}
+
+function Get-ChatProp {
+    param(
+        $Object,
+        [Parameter(Mandatory)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $Object) {
+        return $Default
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $Default
+    }
+
+    return $property.Value
+}
+
+function Get-ChatGitSummary {
+    param([Parameter(Mandatory)]$Session)
+
+    $workspace = [string](Get-ChatProp $Session 'workspace' '')
+    if (-not $workspace -or -not (Test-Path -LiteralPath $workspace)) {
+        return [pscustomobject]@{
+            hasGit = $false; modified = 0; untracked = 0
+            ahead = 0; behind = 0; dirty = $false; text = ''
+        }
+    }
+
+    try {
+        $lines = @(& git -C $workspace status --porcelain --untracked-files=normal 2>$null)
+        if ($LASTEXITCODE -ne 0) { throw 'Not a Git worktree' }
+    } catch {
+        return [pscustomobject]@{
+            hasGit = $false; modified = 0; untracked = 0
+            ahead = 0; behind = 0; dirty = $false; text = ''
+        }
+    }
+
     $untracked = @($lines | Where-Object { $_ -like '??*' }).Count
     $modified = @($lines | Where-Object { $_ -notlike '??*' }).Count
     $ahead = 0
     $behind = 0
+    $branch = [string](Get-ChatProp $Session 'branch' '')
+    $originRepo = [string](Get-ChatProp $Session 'originRepo' '')
 
-    if ($Session.branch -and $Session.originRepo -and (Test-Path -LiteralPath $Session.originRepo)) {
+    if ($branch -and $originRepo -and (Test-Path -LiteralPath $originRepo)) {
         try {
-            $counts = (& git -C $Session.originRepo rev-list --left-right --count "$($Session.branch)...HEAD" 2>$null | Select-Object -First 1)
-            if ($counts) {
+            $counts = (& git -C $originRepo rev-list --left-right --count "$branch...HEAD" 2>$null | Select-Object -First 1)
+            if ($LASTEXITCODE -eq 0 -and $counts) {
                 $parts = $counts -split '\s+'
-                if ($parts.Count -ge 2) { $ahead=[int]$parts[0]; $behind=[int]$parts[1] }
+                if ($parts.Count -ge 2) {
+                    $ahead = [int]$parts[0]
+                    $behind = [int]$parts[1]
+                }
             }
         } catch {}
     }
@@ -191,111 +371,200 @@ function Get-ChatGitSummary {
     if ($untracked) { $bits += "?$untracked" }
     if ($ahead) { $bits += "up$ahead" }
     if ($behind) { $bits += "down$behind" }
+
     return [pscustomobject]@{
-        hasGit=$true; modified=$modified; untracked=$untracked; ahead=$ahead; behind=$behind
-        dirty=(($modified+$untracked) -gt 0); text=($bits -join ' ')
+        hasGit = $true
+        modified = $modified
+        untracked = $untracked
+        ahead = $ahead
+        behind = $behind
+        dirty = (($modified+$untracked) -gt 0)
+        text = ($bits -join ' ')
+    }
+}
+
+function Get-WorktreeCleanupCandidateState {
+    param([Parameter(Mandatory)]$Session)
+
+    $git = Get-ChatGitSummary $Session
+    $safe = $git.hasGit -and -not $git.dirty -and ($git.ahead -eq 0)
+    $reason = if ($safe) {'SAFE'} elseif ($git.dirty) {'DIRTY'} elseif ($git.ahead -gt 0) {'UNMERGED_COMMITS'} else {'UNKNOWN'}
+
+    return [pscustomobject]@{
+        id = [string](Get-ChatProp $Session 'id' '')
+        project = [string](Get-ChatProp $Session 'project' '')
+        workspace = [string](Get-ChatProp $Session 'workspace' '')
+        originRepo = [string](Get-ChatProp $Session 'originRepo' '')
+        branch = [string](Get-ChatProp $Session 'branch' '')
+        safe = $safe
+        reason = $reason
+        git = $git
     }
 }
 
 function Get-WorktreeCleanupCandidates {
-    $results = @()
-    foreach ($file in Get-ChildItem -LiteralPath $script:SessionRoot -Filter '*.json' -File -ErrorAction SilentlyContinue) {
-        $s = Read-ChatJson $file.FullName
-        if (-not $s -or $s.active -or -not $s.isolated -or -not $s.workspace -or -not $s.originRepo) { continue }
-        if (-not (Test-Path -LiteralPath $s.workspace)) { continue }
-        $git = Get-ChatGitSummary $s
-        $safe = $git.hasGit -and -not $git.dirty -and ($git.ahead -eq 0)
-        $reason = if ($safe) {'SAFE'} elseif ($git.dirty) {'DIRTY'} elseif ($git.ahead -gt 0) {'UNMERGED_COMMITS'} else {'UNKNOWN'}
-        $results += [pscustomobject]@{
-            id=$s.id; project=$s.project; workspace=$s.workspace; originRepo=$s.originRepo
-            branch=$s.branch; safe=$safe; reason=$reason; git=$git
+    [CmdletBinding()]
+    param([array]$Sessions)
+
+    if (-not $PSBoundParameters.ContainsKey('Sessions')) {
+        $Sessions = @()
+        foreach ($file in Get-ChildItem -LiteralPath $script:SessionRoot -Filter '*.json' -File -ErrorAction SilentlyContinue) {
+            $session = Read-ChatJson $file.FullName
+            if ($session) { $Sessions += $session }
         }
+    }
+
+    $results = @()
+    foreach ($session in @($Sessions)) {
+        if (-not $session) { continue }
+        if ([bool](Get-ChatProp $session 'active' $false)) { continue }
+        if (-not [bool](Get-ChatProp $session 'isolated' $false)) { continue }
+
+        $workspace = [string](Get-ChatProp $session 'workspace' '')
+        $originRepo = [string](Get-ChatProp $session 'originRepo' '')
+        if (-not $workspace -or -not $originRepo) { continue }
+        if (-not (Test-Path -LiteralPath $workspace)) { continue }
+
+        $results += Get-WorktreeCleanupCandidateState $session
     }
     return $results
 }
 
 function Invoke-SafeWorktreeCleanup {
+    [CmdletBinding()]
+    param(
+        [array]$Candidates,
+        [switch]$SkipRevalidation
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('Candidates')) {
+        $Candidates = @(Get-WorktreeCleanupCandidates | Where-Object safe)
+    } else {
+        $Candidates = @($Candidates | Where-Object { [bool](Get-ChatProp $_ 'safe' $false) })
+    }
+
     $removed = @()
-    foreach ($item in @(Get-WorktreeCleanupCandidates | Where-Object safe)) {
-        & git -C $item.originRepo worktree remove --force $item.workspace 2>$null | Out-Null
-        if (-not (Test-Path -LiteralPath $item.workspace)) {
-            if ($item.branch) { & git -C $item.originRepo branch -D $item.branch 2>$null | Out-Null }
-            $removed += $item
+    $reposToPrune = @{}
+    foreach ($item in $Candidates) {
+        $candidate = if ($SkipRevalidation) { $item } else { Get-WorktreeCleanupCandidateState $item }
+        if (-not $candidate.safe) { continue }
+
+        $workspace = [string](Get-ChatProp $candidate 'workspace' '')
+        $originRepo = [string](Get-ChatProp $candidate 'originRepo' '')
+        if (-not $workspace -or -not $originRepo) { continue }
+
+        & git -C $originRepo worktree remove --force $workspace 2>$null | Out-Null
+        if (-not (Test-Path -LiteralPath $workspace)) {
+            $branch = [string](Get-ChatProp $candidate 'branch' '')
+            if ($branch) { & git -C $originRepo branch -D $branch 2>$null | Out-Null }
+            $reposToPrune[$originRepo] = $true
+            $removed += $candidate
         }
+    }
+
+    foreach ($repo in @($reposToPrune.Keys)) {
+        & git -C $repo worktree prune 2>$null | Out-Null
     }
     return $removed
 }
-function Get-ChatProp {
-    param($Object,[string]$Name,$Default=$null)
-    if ($null -eq $Object) { return $Default }
-    $prop = $Object.PSObject.Properties[$Name]
-    if ($null -eq $prop) { return $Default }
-    return $prop.Value
-}
 
 function Get-SessionIdleInfo {
-    param($Session)
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Session,
+        $GitSummary = $null,
+        [switch]$SkipGit
+    )
+
     $cfg = Get-ChatConfig
-    try { $since = [DateTimeOffset]::Parse([string]$Session.updatedAt).LocalDateTime }
-    catch { $since = Get-Date }
-    $minutes = ((Get-Date) - $since).TotalMinutes
-    $isReady = ([string]$Session.status -eq 'READY')
-    $git = if ($isReady) { Get-ChatGitSummary $Session } else { $null }
+    try {
+        $since = [DateTimeOffset]::Parse([string](Get-ChatProp $Session 'updatedAt' '')).LocalDateTime
+    } catch {
+        $since = Get-Date
+    }
+
+    $minutes = ((Get-Date)-$since).TotalMinutes
+    $isReady = ([string](Get-ChatProp $Session 'status' '') -eq 'READY')
+    $cleanLimit = [int]$cfg.cleanExpireMinutes
+    $dirtyLimit = [int]$cfg.dirtyExpireMinutes
+    $firstExpiryThreshold = [Math]::Min($cleanLimit,$dirtyLimit)
+
+    $git = $GitSummary
+    if (-not $SkipGit -and $null -eq $git -and $isReady -and $minutes -ge $firstExpiryThreshold) {
+        $git = Get-ChatGitSummary $Session
+    }
+
     $dirty = $false
     if ($git -and $git.hasGit) { $dirty = [bool]$git.dirty }
-    $limit = if ($dirty) { [int]$cfg.dirtyExpireMinutes } else { [int]$cfg.cleanExpireMinutes }
+    $limit = if ($dirty) { $dirtyLimit } else { $cleanLimit }
+
     return [pscustomobject]@{
-        isReady=$isReady
-        minutes=$minutes
-        abandoned=($isReady -and $minutes -ge [int]$cfg.abandonedAfterMinutes)
-        dirty=$dirty
-        expireAfterMinutes=$limit
-        expired=($isReady -and $minutes -ge $limit)
+        isReady = $isReady
+        minutes = $minutes
+        abandoned = ($isReady -and $minutes -ge [int]$cfg.abandonedAfterMinutes)
+        dirty = $dirty
+        expireAfterMinutes = $limit
+        expired = ($isReady -and $minutes -ge $limit)
     }
 }
 
 function Get-ChatPortReservations {
     Initialize-AdvancedChatState
+
     $portRoot = Join-Path $script:StateRoot 'ports'
     $items = @()
     foreach ($file in Get-ChildItem -LiteralPath $portRoot -Filter 'port-*.json' -File -ErrorAction SilentlyContinue) {
-        $p = Read-ChatJson $file.FullName
-        if (-not $p) { continue }
-        if (-not (Test-ChatProcessAlive ([int]$p.pid))) {
+        $reservation = Read-ChatJson $file.FullName
+        if (-not $reservation) { continue }
+
+        $pidValue = [int](Get-ChatProp $reservation 'pid' 0)
+        if (-not (Test-ChatProcessAlive $pidValue)) {
             Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
             continue
         }
-        $items += $p
+        $items += $reservation
     }
     return $items
 }
 
 function Get-ProjectConflictGroups {
     param([array]$Sessions = @())
+
+    $withRepos = @($Sessions | Where-Object { [string](Get-ChatProp $_ 'originRepo' '') })
     $groups = @()
-    foreach ($g in @($Sessions | Where-Object { $_.originRepo } | Group-Object originRepo)) {
-        if ($g.Count -gt 1) {
-            $groups += [pscustomobject]@{originRepo=$g.Name;count=$g.Count;sessions=@($g.Group)}
+    foreach ($group in @($withRepos | Group-Object { [string](Get-ChatProp $_ 'originRepo' '') })) {
+        if ($group.Count -gt 1) {
+            $groups += [pscustomobject]@{
+                originRepo = $group.Name
+                count = $group.Count
+                sessions = @($group.Group)
+            }
         }
     }
     return $groups
 }
+
 function Release-SessionReservations {
     param([Parameter(Mandatory)]$Session)
-    $sessionId = [string]$Session.id
+
+    $sessionId = [string](Get-ChatProp $Session 'id' '')
+    if (-not $sessionId) { return }
 
     foreach ($lockFile in Get-ChildItem -LiteralPath $script:LockRoot -Filter '*.json' -File -ErrorAction SilentlyContinue) {
         $lock = Read-ChatJson $lockFile.FullName
-        if ($lock -and $lock.sessionId -eq $sessionId) {
+        if ($lock -and [string](Get-ChatProp $lock 'sessionId' '') -eq $sessionId) {
             Remove-Item -LiteralPath $lockFile.FullName -Force -ErrorAction SilentlyContinue
         }
     }
 
     Release-ChatPort -SessionId $sessionId
 
-    $slotFile = Join-Path $script:SlotRoot ("slot-{0}.json" -f $Session.slot)
-    $slot = Read-ChatJson $slotFile
-    if ($slot -and $slot.sessionId -eq $sessionId) {
-        Remove-Item -LiteralPath $slotFile -Force -ErrorAction SilentlyContinue
+    $slot = Get-ChatProp $Session 'slot' $null
+    if ($null -ne $slot) {
+        $slotFile = Join-Path $script:SlotRoot ("slot-{0}.json" -f $slot)
+        $slotState = Read-ChatJson $slotFile
+        if ($slotState -and [string](Get-ChatProp $slotState 'sessionId' '') -eq $sessionId) {
+            Remove-Item -LiteralPath $slotFile -Force -ErrorAction SilentlyContinue
+        }
     }
 }

@@ -57,8 +57,9 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Git, history, Desktop Commander, expiry, and cleanup checks now run at independent cadences.
 - Grid cells are updated only when their displayed value changes.
 - Expensive Git checks are avoided during ordinary one-second status refreshes.
+- The dashboard reads active sessions through the eight slot files instead of scanning the full session history on every refresh.
 - Session/project registry handling is more defensive against malformed stale entries.
-- UI helpers and runtime/performance logic are split into dedicated modules for easier maintenance.
+- UI helpers are isolated in `MultiChat.UI.ps1`, while performance-sensitive runtime logic is consolidated in `ChatMulti.Advanced.ps1`.
 
 ## Requirements
 
@@ -219,9 +220,8 @@ Resource-lock rules are also defined in `config.json`.
 | File | Purpose |
 |---|---|
 | `ChatMulti.psm1` | Session-management core and module loader |
-| `ChatMulti.Advanced.ps1` | Ports, history, project resolution, conflicts, and reservations |
-| `ChatMulti.Performance.ps1` | Git/status, cleanup, idle-state, and robust project-registry logic |
-| `MultiChat-Tray.ps1` | Dashboard orchestration and system-tray agent |
+| `ChatMulti.Advanced.ps1` | Configuration cache, ports, history, project resolution, Git/status, cleanup, idle-state, conflicts, and reservations |
+| `MultiChat-Tray.ps1` | Dashboard orchestration, background workers, and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
 | `Start-McpChatSession.ps1` | Starts and owns one persistent managed chat session |
 | `Setup.cmd` / `Setup.ps1` | Local setup and desktop shortcut |
@@ -244,7 +244,7 @@ Expected result:
 
 ```text
 SELF-TEST: OK
-Dependencies, scripts, configuration, slots, colors and ports: OK.
+Dependencies, scripts, configuration, registry robustness, slots, colors and ports: OK.
 ```
 
 The test checks dependencies, PowerShell syntax, configuration, slot behavior, fixed colors, and port reservation.

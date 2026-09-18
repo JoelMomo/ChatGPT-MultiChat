@@ -47,21 +47,54 @@ function Get-ManagedChatSession {
 }
 
 function Get-ManagedChatSessions {
+    [CmdletBinding()]
+    param(
+        [switch]$SkipLivenessCheck,
+        [switch]$ActiveOnly
+    )
+
     Initialize-ChatMulti
+    $sessionFiles = @()
+
+    if ($ActiveOnly) {
+        $seen = @{}
+        foreach ($slotFile in Get-ChildItem -LiteralPath $script:SlotRoot -Filter 'slot-*.json' -File -ErrorAction SilentlyContinue) {
+            $slotState = Read-ChatJson $slotFile.FullName
+            $sessionId = [string](Get-ChatProp $slotState 'sessionId' '')
+            if (-not $sessionId -or $seen.ContainsKey($sessionId)) { continue }
+
+            $sessionFile = Join-Path $script:SessionRoot "$sessionId.json"
+            if (Test-Path -LiteralPath $sessionFile) {
+                $seen[$sessionId] = $true
+                $sessionFiles += Get-Item -LiteralPath $sessionFile
+            }
+        }
+    } else {
+        $sessionFiles = @(
+            Get-ChildItem -LiteralPath $script:SessionRoot -Filter '*.json' -File -ErrorAction SilentlyContinue
+        )
+    }
+
     $items = @()
-    foreach ($file in Get-ChildItem -LiteralPath $script:SessionRoot -Filter '*.json' -File -ErrorAction SilentlyContinue) {
+    foreach ($file in $sessionFiles) {
         $s = Read-ChatJson $file.FullName
         if ($null -eq $s) { continue }
-        $alive = Test-ChatProcessAlive ([int]$s.pid)
-        if ($s.active -and -not $alive) {
-            $s.active = $false
-            $s.status = 'STALE'
-            $s.updatedAt = (Get-Date).ToString('o')
-            Release-SessionReservations $s
-            Write-ChatHistory $s 'PROCESS_GONE'
-            Write-ChatJson $file.FullName $s
+
+        if (-not $SkipLivenessCheck) {
+            $alive = Test-ChatProcessAlive ([int](Get-ChatProp $s 'pid' 0))
+            if ([bool](Get-ChatProp $s 'active' $false) -and -not $alive) {
+                $s.active = $false
+                $s.status = 'STALE'
+                $s.updatedAt = (Get-Date).ToString('o')
+                Release-SessionReservations $s
+                Write-ChatHistory $s 'PROCESS_GONE'
+                Write-ChatJson $file.FullName $s
+            }
         }
-        $items += $s
+
+        if (-not $ActiveOnly -or [bool](Get-ChatProp $s 'active' $false)) {
+            $items += $s
+        }
     }
     return $items
 }
@@ -74,21 +107,24 @@ function Expire-IdleManagedChatSessions {
     $now = Get-Date
     $expired = @()
 
-    foreach ($file in Get-ChildItem -LiteralPath $script:SessionRoot -Filter '*.json' -File -ErrorAction SilentlyContinue) {
-        $s = Read-ChatJson $file.FullName
-        if ($null -eq $s -or -not $s.active -or $s.status -ne 'READY') { continue }
+    foreach ($s in @(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck)) {
+        if ([string](Get-ChatProp $s 'status' '') -ne 'READY') { continue }
 
         $idle = Get-SessionIdleInfo $s
-        $shouldExpire = if ($IdleMinutes -gt 0) { $idle.minutes -ge $IdleMinutes } else { $idle.expired }
+        $shouldExpire = if ($IdleMinutes -gt 0) {
+            $idle.minutes -ge $IdleMinutes
+        } else {
+            $idle.expired
+        }
         if (-not $shouldExpire) { continue }
 
-        $pidToStop = [int]$s.pid
+        $pidToStop = [int](Get-ChatProp $s 'pid' 0)
         $s.active = $false
         $s.status = if ($idle.dirty) { 'IDLE_EXPIRED_DIRTY' } else { 'IDLE_EXPIRED' }
         $s.updatedAt = $now.ToString('o')
         Release-SessionReservations $s
         Write-ChatHistory $s 'IDLE_EXPIRED'
-        Write-ChatJson $file.FullName $s
+        Write-ChatJson (Join-Path $script:SessionRoot "$($s.id).json") $s
         $expired += $s
 
         if ($pidToStop -gt 0 -and $pidToStop -ne $PID -and (Test-ChatProcessAlive $pidToStop)) {

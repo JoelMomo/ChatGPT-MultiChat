@@ -17,7 +17,10 @@ function Write-ResultFile {
 
 $items = @()
 if ($CandidatesFile -and (Test-Path -LiteralPath $CandidatesFile)) {
-    try { $items = @(Get-Content -LiteralPath $CandidatesFile -Raw | ConvertFrom-Json) }
+    try {
+        $parsed = Get-Content -LiteralPath $CandidatesFile -Raw | ConvertFrom-Json
+        foreach ($candidate in $parsed) { $items += $candidate }
+    }
     catch { $items = @() }
 } else {
     $items = @(Get-WorktreeCleanupCandidates)

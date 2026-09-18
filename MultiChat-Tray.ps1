@@ -19,6 +19,7 @@ if(-not $createdNew){
 $script:exiting=$false
 $script:lastRemoteRestart=[datetime]::MinValue
 $script:lastRemoteCheck=[datetime]::MinValue
+$script:lastSessionValidation=[datetime]::MinValue
 $script:lastExpiryCheck=[datetime]::MinValue
 $script:lastHistoryCheck=[datetime]::MinValue
 $script:lastCleanupScanStart=[datetime]::MinValue
@@ -29,7 +30,8 @@ $script:cachedSafe=0
 $script:cachedPending=0
 $script:cleanupScanProcess=$null
 $script:cleanupProcess=$null
-$script:cleanupResultFile=$null
+$script:cleanupScanResultFile=$null
+$script:cleanupApplyResultFile=$null
 $script:lastHistoryText=''
 
 $stateCacheRoot=Join-Path $root 'state\cache'
@@ -65,7 +67,7 @@ function Get-GitCached {
     $id=[string](Get-ChatProp $Session 'id' '')
     $cached=$script:gitCache[$id]
     $now=Get-Date
-    $maxAge=[int](Get-ChatProp $cfg 'gitRefreshSeconds' 8)
+    $maxAge=[int](Get-ChatProp $cfg 'gitRefreshSeconds' 10)
     if($cached -and (($now-$cached.at).TotalSeconds -lt $maxAge)){return $cached.value}
     $value=Get-ChatGitSummary $Session
     $script:gitCache[$id]=@{at=$now;value=$value}
@@ -77,23 +79,26 @@ function Start-WorktreeScan {
     $result=Join-Path $stateCacheRoot 'worktree-scan.json'
     Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
     $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-ResultFile',$result,'-Quiet')
-    $script:cleanupResultFile=$result
+    $script:cleanupScanResultFile=$result
     $script:cleanupScanProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
     $script:lastCleanupScanStart=Get-Date
 }
 
 function Complete-WorktreeScan {
     if(-not $script:cleanupScanProcess -or -not $script:cleanupScanProcess.HasExited){return $false}
-    if($script:cleanupResultFile -and (Test-Path -LiteralPath $script:cleanupResultFile)){
+    if($script:cleanupScanResultFile -and (Test-Path -LiteralPath $script:cleanupScanResultFile)){
         try{
-            $result=Get-Content -LiteralPath $script:cleanupResultFile -Raw|ConvertFrom-Json
-            $script:cleanupCandidates=@($result.items)
+            $result=Get-Content -LiteralPath $script:cleanupScanResultFile -Raw|ConvertFrom-Json
+            $script:cleanupCandidates=@()
+            foreach($candidate in $result.items){$script:cleanupCandidates+=$candidate}
             $script:cachedSafe=[int]$result.safeCount
             $script:cachedPending=[int]$result.pendingCount
         }catch{}
     }
     $script:cleanupScanProcess.Dispose()
     $script:cleanupScanProcess=$null
+    if($script:cleanupScanResultFile){Remove-Item -LiteralPath $script:cleanupScanResultFile -Force -ErrorAction SilentlyContinue}
+    $script:cleanupScanResultFile=$null
     return $true
 }
 
@@ -113,7 +118,7 @@ function Start-WorktreeCleanup {
     Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
 
     $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-Apply','-CandidatesFile',$candidateFile,'-ResultFile',$resultFile,'-Quiet')
-    $script:cleanupResultFile=$resultFile
+    $script:cleanupApplyResultFile=$resultFile
     $script:cleanupProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
     $cleanupButton.Enabled=$false
     $cleanupButton.Text='Cleaning...'
@@ -123,11 +128,14 @@ function Start-WorktreeCleanup {
 function Complete-WorktreeCleanup {
     if(-not $script:cleanupProcess -or -not $script:cleanupProcess.HasExited){return $false}
     $removed=0
-    if($script:cleanupResultFile -and (Test-Path -LiteralPath $script:cleanupResultFile)){
-        try{$removed=[int](Get-Content -LiteralPath $script:cleanupResultFile -Raw|ConvertFrom-Json).removedCount}catch{}
+    if($script:cleanupApplyResultFile -and (Test-Path -LiteralPath $script:cleanupApplyResultFile)){
+        try{$removed=[int](Get-Content -LiteralPath $script:cleanupApplyResultFile -Raw|ConvertFrom-Json).removedCount}catch{}
     }
     $script:cleanupProcess.Dispose()
     $script:cleanupProcess=$null
+    if($script:cleanupApplyResultFile){Remove-Item -LiteralPath $script:cleanupApplyResultFile -Force -ErrorAction SilentlyContinue}
+    Remove-Item -LiteralPath (Join-Path $stateCacheRoot 'cleanup-input.json') -Force -ErrorAction SilentlyContinue
+    $script:cleanupApplyResultFile=$null
     $cleanupButton.Enabled=$true
     $cleanupHint.Text=if($removed -eq 1){'1 worktree removed.'}else{"$removed worktrees removed."}
     Start-WorktreeScan
@@ -210,14 +218,21 @@ function Update-History {
 
 function Refresh-Dashboard {
     $now=Get-Date
-    $expiryInterval=[int](Get-ChatProp $cfg 'expiryRefreshSeconds' 10)
+    $expiryInterval=[int](Get-ChatProp $cfg 'expiryCheckSeconds' 10)
     if(($now-$script:lastExpiryCheck).TotalSeconds -ge $expiryInterval){
         Expire-IdleManagedChatSessions|Out-Null
         $script:lastExpiryCheck=$now
     }
 
-    $sessions=@(Get-ManagedChatSessions|Where-Object active|Sort-Object slot)
-    $processInterval=[int](Get-ChatProp $cfg 'processRefreshSeconds' 5)
+    $processInterval=[int](Get-ChatProp $cfg 'remoteCheckSeconds' 10)
+    $validateSessions=(($now-$script:lastSessionValidation).TotalSeconds -ge $processInterval)
+    $sessions=if($validateSessions){
+        $script:lastSessionValidation=$now
+        @(Get-ManagedChatSessions -ActiveOnly|Sort-Object slot)
+    }else{
+        @(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck|Sort-Object slot)
+    }
+
     if(($now-$script:lastRemoteCheck).TotalSeconds -ge $processInterval){
         $script:remoteProcesses=@(Get-RemoteCommanderProcess)
         $script:lastRemoteCheck=$now
@@ -227,7 +242,7 @@ function Refresh-Dashboard {
 
     [void](Complete-WorktreeScan)
     [void](Complete-WorktreeCleanup)
-    $cleanupInterval=[int](Get-ChatProp $cfg 'cleanupRefreshSeconds' 20)
+    $cleanupInterval=[int](Get-ChatProp $cfg 'cleanupScanSeconds' 30)
     if(-not $script:cleanupScanProcess -and -not $script:cleanupProcess -and (($now-$script:lastCleanupScanStart).TotalSeconds -ge $cleanupInterval)){Start-WorktreeScan}
 
     $working=Update-SessionRows -Sessions $sessions
@@ -307,10 +322,10 @@ $metrics.Padding=New-Object Windows.Forms.Padding(0,4,0,8)
 $form.Controls.Add($metrics)
 $metrics.BringToFront()
 
-$dcCard=New-MetricCard -Title 'DESKTOP COMMANDER' -Width 220
-$chatCard=New-MetricCard -Title 'ACTIVE CHATS' -Width 190
-$workCard=New-MetricCard -Title 'WORKING NOW' -Width 190
-$treeCard=New-MetricCard -Title 'WORKTREES' -Width 280
+$dcCard=New-MetricCard -Title 'DESKTOP COMMANDER' -Width 200
+$chatCard=New-MetricCard -Title 'ACTIVE CHATS' -Width 165
+$workCard=New-MetricCard -Title 'WORKING NOW' -Width 155
+$treeCard=New-MetricCard -Title 'WORKTREES' -Width 260
 $metrics.Controls.AddRange(@($dcCard,$chatCard,$workCard,$treeCard))
 
 $actionPanel=New-Object Windows.Forms.Panel
@@ -446,6 +461,7 @@ $form.Add_FormClosing({
 $miExit.Add_Click({
     $script:exiting=$true
     if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){$script:cleanupScanProcess.Kill()}
+    if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){$script:cleanupProcess.Kill()}
     $notify.Visible=$false
     $form.Close()
     [Windows.Forms.Application]::Exit()
