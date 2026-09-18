@@ -337,7 +337,7 @@ function Get-ChatGitSummary {
     }
 
     try {
-        $lines = @(& git -C $workspace status --porcelain --untracked-files=normal 2>$null)
+        $lines = @(& git -C $workspace status --porcelain --untracked-files=all 2>$null)
         if ($LASTEXITCODE -ne 0) { throw 'Not a Git worktree' }
     } catch {
         return [pscustomobject]@{

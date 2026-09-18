@@ -72,6 +72,52 @@ try{
     if((Get-ChatColor 1) -eq (Get-ChatColor 2)){
         $errors+='CHAT-1/2 colors are identical'
     }
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    . (Join-Path $root 'MultiChat.UI.ps1')
+    $gitView=Format-GitSummary ([pscustomobject]@{
+        hasGit=$true;modified=2;untracked=3;ahead=1;behind=0
+    })
+    if($gitView.Text -ne '2 changed  3 new  ahead 1'){
+        $errors+="Unexpected Git presentation: $($gitView.Text)"
+    }
+    $testForm=New-Object Windows.Forms.Form
+    $testForm.FormBorderStyle='None'
+    if($testForm.FormBorderStyle -ne 'None'){
+        $errors+='Borderless window mode is unavailable'
+    }
+    $testForm.Dispose()
+
+    $cleanupBase=Join-Path $root 'state\selftest-cleanup'
+    try{
+        $repo=Join-Path $cleanupBase 'repo'
+        $worktree=Join-Path $cleanupBase 'worktree'
+        Remove-Item $cleanupBase -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $repo -Force|Out-Null
+        & git -C $repo init -q
+        & git -C $repo config user.email 'selftest@local'
+        & git -C $repo config user.name 'MultiChat SelfTest'
+        Set-Content (Join-Path $repo 'probe.txt') 'ok' -Encoding ascii
+        & git -C $repo add probe.txt
+        & git -C $repo commit -qm 'probe'
+        & git -C $repo worktree add -q -b cleanup-probe $worktree HEAD
+
+        $candidate=[pscustomobject]@{
+            id='selftest';project='selftest';workspace=$worktree
+            originRepo=$repo;branch='cleanup-probe';safe=$true;reason='SAFE'
+        }
+        $removed=@(Invoke-SafeWorktreeCleanup -Candidates @($candidate))
+        if($removed.Count -ne 1 -or (Test-Path -LiteralPath $worktree)){
+            $errors+='Safe worktree cleanup did not remove the test worktree'
+        }
+        if((& git -C $repo branch --list cleanup-probe)){
+            $errors+='Safe worktree cleanup did not remove the test branch'
+        }
+    }finally{
+        Remove-Item $cleanupBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     Stop-ManagedChatSession
 }catch{
     $errors+=$_.Exception.Message

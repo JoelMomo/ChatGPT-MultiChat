@@ -135,3 +135,176 @@ function Set-GridCellValue {
         $Row.Cells[$Column].Value = $text
     }
 }
+
+
+if (-not ('MultiChatNativeWindow' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+
+public static class MultiChatNativeWindow
+{
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool ReleaseCapture();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
+}
+"@
+}
+
+function Enable-WindowDrag {
+    param(
+        [Parameter(Mandatory)]$Control,
+        [Parameter(Mandatory)]$Form
+    )
+
+    $Control.Add_MouseDown({
+        param($sender,$eventArgs)
+        if ($eventArgs.Button -eq [Windows.Forms.MouseButtons]::Left -and $Form.WindowState -eq 'Normal') {
+            [MultiChatNativeWindow]::ReleaseCapture() | Out-Null
+            [MultiChatNativeWindow]::SendMessage($Form.Handle,0x00A1,2,0) | Out-Null
+        }
+    }.GetNewClosure())
+}
+
+function Format-GitSummary {
+    param($Summary)
+
+    if (-not $Summary -or -not [bool](Get-ChatProp $Summary 'hasGit' $false)) {
+        return [pscustomobject]@{ Text='--'; Tone='Neutral'; ToolTip='No Git worktree detected' }
+    }
+
+    $modified = [int](Get-ChatProp $Summary 'modified' 0)
+    $untracked = [int](Get-ChatProp $Summary 'untracked' 0)
+    $ahead = [int](Get-ChatProp $Summary 'ahead' 0)
+    $behind = [int](Get-ChatProp $Summary 'behind' 0)
+
+    $parts = @()
+    if ($modified -gt 0) { $parts += "$modified changed" }
+    if ($untracked -gt 0) { $parts += "$untracked new" }
+    if ($ahead -gt 0) { $parts += "ahead $ahead" }
+    if ($behind -gt 0) { $parts += "behind $behind" }
+
+    if (-not $parts.Count) {
+        return [pscustomobject]@{ Text='Clean'; Tone='Good'; ToolTip='Working tree clean and branch aligned with the base checkout' }
+    }
+
+    $tipParts = @()
+    if ($modified -gt 0) { $tipParts += "$modified tracked file(s) changed" }
+    if ($untracked -gt 0) { $tipParts += "$untracked untracked file(s)" }
+    if ($ahead -gt 0) { $tipParts += "$ahead commit(s) ahead" }
+    if ($behind -gt 0) { $tipParts += "$behind commit(s) behind" }
+
+    return [pscustomobject]@{
+        Text = ($parts -join '  ')
+        Tone = if($behind -gt 0){'Warn'}elseif($modified -gt 0 -or $untracked -gt 0){'Warn'}else{'Neutral'}
+        ToolTip = ($tipParts -join '; ')
+    }
+}
+
+
+function Show-MultiChatConfirm {
+    param(
+        [Parameter(Mandatory)]$Owner,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Title = 'MultiChat'
+    )
+
+    $dialog = New-Object Windows.Forms.Form
+    $dialog.Text = $Title
+    $dialog.Size = New-Object Drawing.Size(510,178)
+    $dialog.MinimumSize = $dialog.Size
+    $dialog.MaximumSize = $dialog.Size
+    $dialog.StartPosition = 'CenterParent'
+    $dialog.BackColor = $script:UiColors.Surface
+    $dialog.ForeColor = $script:UiColors.Text
+    $dialog.FormBorderStyle = 'None'
+    $dialog.ShowInTaskbar = $false
+    $dialog.Padding = New-Object Windows.Forms.Padding(18)
+    Enable-ControlDoubleBuffer $dialog
+
+    $titleLabel = New-Object Windows.Forms.Label
+    $titleLabel.Text = $Title
+    $titleLabel.AutoSize = $true
+    $titleLabel.Font = New-Object Drawing.Font('Segoe UI Semibold',11)
+    $titleLabel.ForeColor = $script:UiColors.Text
+    $titleLabel.Location = New-Object Drawing.Point(18,15)
+    $dialog.Controls.Add($titleLabel)
+
+    $messageLabel = New-Object Windows.Forms.Label
+    $messageLabel.Text = $Message
+    $messageLabel.Size = New-Object Drawing.Size(470,52)
+    $messageLabel.Font = New-Object Drawing.Font('Segoe UI',9.5)
+    $messageLabel.ForeColor = $script:UiColors.Text
+    $messageLabel.Location = New-Object Drawing.Point(18,52)
+    $dialog.Controls.Add($messageLabel)
+
+    $noButton = New-FlatButton -Text 'Cancel' -Width 105
+    $noButton.Location = New-Object Drawing.Point(270,122)
+    $noButton.DialogResult = [Windows.Forms.DialogResult]::No
+    $dialog.Controls.Add($noButton)
+
+    $yesButton = New-FlatButton -Text 'Clean' -Width 105 -Accent
+    $yesButton.Location = New-Object Drawing.Point(383,122)
+    $yesButton.DialogResult = [Windows.Forms.DialogResult]::Yes
+    $dialog.Controls.Add($yesButton)
+
+    $dialog.AcceptButton = $yesButton
+    $dialog.CancelButton = $noButton
+    Enable-WindowDrag -Control $titleLabel -Form $dialog
+
+    try {
+        return ($dialog.ShowDialog($Owner) -eq [Windows.Forms.DialogResult]::Yes)
+    } finally {
+        $dialog.Dispose()
+    }
+}
+
+function Show-MultiChatInfo {
+    param(
+        [Parameter(Mandatory)]$Owner,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Title = 'MultiChat'
+    )
+
+    $dialog = New-Object Windows.Forms.Form
+    $dialog.Text = $Title
+    $dialog.Size = New-Object Drawing.Size(450,155)
+    $dialog.MinimumSize = $dialog.Size
+    $dialog.MaximumSize = $dialog.Size
+    $dialog.StartPosition = 'CenterParent'
+    $dialog.BackColor = $script:UiColors.Surface
+    $dialog.ForeColor = $script:UiColors.Text
+    $dialog.FormBorderStyle = 'None'
+    $dialog.ShowInTaskbar = $false
+
+    $titleLabel = New-Object Windows.Forms.Label
+    $titleLabel.Text = $Title
+    $titleLabel.AutoSize = $true
+    $titleLabel.Font = New-Object Drawing.Font('Segoe UI Semibold',11)
+    $titleLabel.ForeColor = $script:UiColors.Text
+    $titleLabel.Location = New-Object Drawing.Point(18,15)
+    $dialog.Controls.Add($titleLabel)
+
+    $messageLabel = New-Object Windows.Forms.Label
+    $messageLabel.Text = $Message
+    $messageLabel.Size = New-Object Drawing.Size(410,48)
+    $messageLabel.Font = New-Object Drawing.Font('Segoe UI',9.5)
+    $messageLabel.ForeColor = $script:UiColors.Text
+    $messageLabel.Location = New-Object Drawing.Point(18,50)
+    $dialog.Controls.Add($messageLabel)
+
+    $okButton = New-FlatButton -Text 'OK' -Width 105 -Accent
+    $okButton.Location = New-Object Drawing.Point(325,108)
+    $okButton.DialogResult = [Windows.Forms.DialogResult]::OK
+    $dialog.Controls.Add($okButton)
+    $dialog.AcceptButton = $okButton
+    $dialog.CancelButton = $okButton
+    Enable-WindowDrag -Control $titleLabel -Form $dialog
+
+    try {
+        [void]$dialog.ShowDialog($Owner)
+    } finally {
+        $dialog.Dispose()
+    }
+}

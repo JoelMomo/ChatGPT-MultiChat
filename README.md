@@ -52,8 +52,10 @@ Each chat should open **one persistent managed session** and reuse that same pro
 ## What's new in v2.1.0
 
 - Refreshed dashboard using Segoe UI, flatter controls, status cards, and clearer visual hierarchy.
+- Borderless dark window chrome replaces the native white Windows title bar; the custom header remains draggable.
+- Git state is now shown with readable labels such as `Clean`, `28 new`, `4 changed`, `ahead 2`, and `behind 1`.
 - Worktree scanning and cleanup run in hidden worker processes instead of blocking the UI thread.
-- Cleanup uses cached candidates and revalidates only worktrees that are about to be removed.
+- Cleanup uses cached candidates, clears stale counts immediately, revalidates candidates before deletion, and reports failed removals.
 - Git summaries, session expiry, liveness validation, and Desktop Commander health checks run in a hidden maintenance worker instead of the UI thread.
 - Grid cells are updated only when their displayed value changes.
 - Expensive Git checks are avoided during ordinary one-second status refreshes.

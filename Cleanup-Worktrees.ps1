@@ -53,12 +53,15 @@ if ($Apply -and $safe.Count) {
     Write-Host 'Use -Apply to remove ONLY the entries marked SAFE.' -ForegroundColor DarkGray
 }
 
+$failedCount = if($Apply){[Math]::Max(0,$safe.Count-$removed.Count)}else{0}
+
 $result = [ordered]@{
     scannedAt = (Get-Date).ToString('o')
     candidateCount = $items.Count
     safeCount = $safe.Count
     pendingCount = $pending.Count
     removedCount = $removed.Count
+    failedCount = $failedCount
     items = @($items | ForEach-Object {
         [ordered]@{
             id = [string](Get-ChatProp $_ 'id' '')

@@ -1,4 +1,7 @@
-param([switch]$StartHidden)
+param(
+    [switch]$StartHidden,
+    [string]$InstanceName='ChatGPTMultiChatAgentV2'
+)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -10,7 +13,7 @@ Import-Module (Join-Path $root 'ChatMulti.psm1') -Force -DisableNameChecking
 $cfg=Get-ChatConfig
 
 $createdNew=$false
-$mutex=New-Object Threading.Mutex($true,'ChatGPTMultiChatAgentV2',[ref]$createdNew)
+$mutex=New-Object Threading.Mutex($true,$InstanceName,[ref]$createdNew)
 if(-not $createdNew){
     [Windows.Forms.MessageBox]::Show('ChatGPT MultiChat Agent is already running.','MultiChat')|Out-Null
     exit 0
@@ -143,11 +146,11 @@ function Start-WorktreeCleanup {
     if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){return}
     $safe=@($script:cleanupCandidates|Where-Object{[bool](Get-ChatProp $_ 'safe' $false)})
     if(-not $safe.Count){
-        [Windows.Forms.MessageBox]::Show('There are no safe worktrees to clean.','MultiChat')|Out-Null
+        Show-MultiChatInfo -Owner $form -Message 'There are no safe worktrees to clean.'
         return
     }
-    $msg="$($safe.Count) clean worktrees with no pending commits will be removed. Continue?"
-    if([Windows.Forms.MessageBox]::Show($msg,'MultiChat','YesNo','Question') -ne 'Yes'){return}
+    $msg="$($safe.Count) clean worktrees with no pending commits will be removed."
+    if(-not (Show-MultiChatConfirm -Owner $form -Message $msg)){return}
 
     $candidateFile=Join-Path $stateCacheRoot 'cleanup-input.json'
     $resultFile=Join-Path $stateCacheRoot 'cleanup-result.json'
@@ -157,6 +160,10 @@ function Start-WorktreeCleanup {
     $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-Apply','-CandidatesFile',$candidateFile,'-ResultFile',$resultFile,'-Quiet')
     $script:cleanupApplyResultFile=$resultFile
     $script:cleanupProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
+
+    # The displayed count is now stale by definition. Hide it until the post-cleanup scan finishes.
+    $script:cleanupCandidates=@()
+    $script:cachedSafe=0
     $cleanupButton.Enabled=$false
     $cleanupButton.Text='Cleaning...'
     $cleanupHint.Text='Validating and removing safe worktrees in the background.'
@@ -165,28 +172,51 @@ function Start-WorktreeCleanup {
 function Complete-WorktreeCleanup {
     if(-not $script:cleanupProcess -or -not $script:cleanupProcess.HasExited){return $false}
     $removed=0
+    $failed=0
     if($script:cleanupApplyResultFile -and (Test-Path -LiteralPath $script:cleanupApplyResultFile)){
-        try{$removed=[int](Get-Content -LiteralPath $script:cleanupApplyResultFile -Raw|ConvertFrom-Json).removedCount}catch{}
+        try{
+            $cleanupResult=Get-Content -LiteralPath $script:cleanupApplyResultFile -Raw|ConvertFrom-Json
+            $removed=[int](Get-ChatProp $cleanupResult 'removedCount' 0)
+            $failed=[int](Get-ChatProp $cleanupResult 'failedCount' 0)
+        }catch{}
     }
     $script:cleanupProcess.Dispose()
     $script:cleanupProcess=$null
     if($script:cleanupApplyResultFile){Remove-Item -LiteralPath $script:cleanupApplyResultFile -Force -ErrorAction SilentlyContinue}
     Remove-Item -LiteralPath (Join-Path $stateCacheRoot 'cleanup-input.json') -Force -ErrorAction SilentlyContinue
     $script:cleanupApplyResultFile=$null
+    $script:cachedSafe=0
+    $script:cleanupCandidates=@()
     $cleanupButton.Enabled=$true
-    $cleanupHint.Text=if($removed -eq 1){'1 worktree removed.'}else{"$removed worktrees removed."}
+    $cleanupButton.Text='Clean safe worktrees'
+    $cleanupHint.Text=if($failed -gt 0){
+        "$removed removed; $failed could not be removed. Rescanning..."
+    }elseif($removed -eq 1){
+        '1 worktree removed. Rescanning...'
+    }else{
+        "$removed worktrees removed. Rescanning..."
+    }
+    $script:lastCleanupScanStart=[datetime]::MinValue
     Start-WorktreeScan
     return $true
 }
 
 function Update-SessionRows {
     param([array]$Sessions)
+
     $conflicts=@(Get-ProjectConflictGroups -Sessions $Sessions)
     $conflictRepos=@{}
     foreach($group in $conflicts){$conflictRepos[$group.originRepo]=$group.count}
 
-    while($grid.Rows.Count -lt $Sessions.Count){[void]$grid.Rows.Add()}
-    while($grid.Rows.Count -gt $Sessions.Count){$grid.Rows.RemoveAt($grid.Rows.Count-1)}
+    $structureChanged=$false
+    while($grid.Rows.Count -lt $Sessions.Count){
+        [void]$grid.Rows.Add()
+        $structureChanged=$true
+    }
+    while($grid.Rows.Count -gt $Sessions.Count){
+        $grid.Rows.RemoveAt($grid.Rows.Count-1)
+        $structureChanged=$true
+    }
 
     $working=0
     for($i=0;$i -lt $Sessions.Count;$i++){
@@ -202,11 +232,14 @@ function Update-SessionRows {
         }
 
         $git=Get-GitSnapshot $s
-        $gitText=if($git -and $git.text){$git.text}elseif($git -and $git.hasGit){'clean'}else{''}
+        $gitView=Format-GitSummary $git
+        $gitText=$gitView.Text
         $port=Get-ChatProp $s 'devPort' ''
         $warning=''
         $originRepo=[string](Get-ChatProp $s 'originRepo' '')
-        if($originRepo -and $conflictRepos.ContainsKey($originRepo)){$warning="SAME PROJECT x$($conflictRepos[$originRepo])"}
+        if($originRepo -and $conflictRepos.ContainsKey($originRepo)){
+            $warning="SAME PROJECT x$($conflictRepos[$originRepo])"
+        }
 
         $row=$grid.Rows[$i]
         Set-GridCellValue $row 'Chat' "CHAT-$($s.slot)"
@@ -219,22 +252,39 @@ function Update-SessionRows {
         Set-GridCellValue $row 'Task' $s.task
         Set-GridCellValue $row 'Warning' $warning
 
-        $slotColor=Get-SlotColor([int]$s.slot)
-        $chatCell=$row.Cells['Chat']
-        $chatCell.Style.BackColor=$slotColor
-        $chatCell.Style.ForeColor=[Drawing.Color]::FromArgb(15,17,21)
-        $chatCell.Style.SelectionBackColor=$slotColor
-        $chatCell.Style.SelectionForeColor=[Drawing.Color]::FromArgb(15,17,21)
-
-        $row.Cells['Activity'].Style.ForeColor=switch($activity){
-            'WORKING'{$script:UiColors.Warn}
-            'ABANDONED'{$script:UiColors.Bad}
-            default{$script:UiColors.Good}
+        $gitCell=$row.Cells['Git']
+        if($gitCell.ToolTipText -ne $gitView.ToolTip){$gitCell.ToolTipText=$gitView.ToolTip}
+        $gitColor=switch($gitView.Tone){
+            'Good'{$script:UiColors.Good}
+            'Warn'{$script:UiColors.Warn}
+            default{$script:UiColors.Muted}
         }
-        $row.Cells['Warning'].Style.ForeColor=if($warning){$script:UiColors.Warn}else{$script:UiColors.Muted}
+        if($gitCell.Style.ForeColor -ne $gitColor){$gitCell.Style.ForeColor=$gitColor}
+
+        $presentationKey="$($s.slot)|$activity|$warning"
+        if([string]$row.Tag -ne $presentationKey){
+            $slotColor=Get-SlotColor([int]$s.slot)
+            $chatCell=$row.Cells['Chat']
+            $darkText=[Drawing.Color]::FromArgb(15,17,21)
+            $chatCell.Style.BackColor=$slotColor
+            $chatCell.Style.ForeColor=$darkText
+            $chatCell.Style.SelectionBackColor=$slotColor
+            $chatCell.Style.SelectionForeColor=$darkText
+
+            $row.Cells['Activity'].Style.ForeColor=switch($activity){
+                'WORKING'{$script:UiColors.Warn}
+                'ABANDONED'{$script:UiColors.Bad}
+                default{$script:UiColors.Good}
+            }
+            $row.Cells['Warning'].Style.ForeColor=if($warning){$script:UiColors.Warn}else{$script:UiColors.Muted}
+            $row.Tag=$presentationKey
+        }
     }
-    $grid.ClearSelection()
-    $grid.CurrentCell=$null
+
+    if($structureChanged){
+        $grid.ClearSelection()
+        $grid.CurrentCell=$null
+    }
     return $working
 }
 
@@ -310,6 +360,7 @@ function Refresh-Dashboard {
 
 $form=New-Object Windows.Forms.Form
 $form.Text='ChatGPT MultiChat'
+$form.FormBorderStyle='None'
 $form.Size=New-Object Drawing.Size(1120,700)
 $form.MinimumSize=New-Object Drawing.Size(900,560)
 $form.StartPosition='CenterScreen'
@@ -347,6 +398,46 @@ $connectionLabel.Font=New-Object Drawing.Font('Segoe UI Semibold',9)
 $connectionLabel.Anchor='Top,Right'
 $connectionLabel.Location=New-Object Drawing.Point(840,12)
 $header.Controls.Add($connectionLabel)
+
+$windowControls=New-Object Windows.Forms.FlowLayoutPanel
+$windowControls.Dock='Right'
+$windowControls.Width=78
+$windowControls.Height=36
+$windowControls.WrapContents=$false
+$windowControls.FlowDirection='LeftToRight'
+$windowControls.BackColor=$script:UiColors.Bg
+$windowControls.Padding=New-Object Windows.Forms.Padding(4,0,0,0)
+$header.Controls.Add($windowControls)
+
+$minimizeButton=New-FlatButton -Text ([char]0x2013) -Width 34
+$minimizeButton.Height=30
+$minimizeButton.FlatAppearance.BorderSize=0
+$minimizeButton.BackColor=$script:UiColors.Bg
+$minimizeButton.Margin=New-Object Windows.Forms.Padding(0)
+$minimizeButton.Add_Click({$form.WindowState='Minimized'})
+$windowControls.Controls.Add($minimizeButton)
+
+$closeButton=New-FlatButton -Text ([char]0x00D7) -Width 34
+$closeButton.Height=30
+$closeButton.FlatAppearance.BorderSize=0
+$closeButton.BackColor=$script:UiColors.Bg
+$closeButton.Margin=New-Object Windows.Forms.Padding(0)
+$closeButton.Add_MouseEnter({$this.BackColor=[Drawing.Color]::FromArgb(155,55,55)})
+$closeButton.Add_MouseLeave({$this.BackColor=$script:UiColors.Bg})
+$closeButton.Add_Click({$form.Close()})
+$windowControls.Controls.Add($closeButton)
+
+Enable-WindowDrag -Control $header -Form $form
+Enable-WindowDrag -Control $title -Form $form
+Enable-WindowDrag -Control $subtitle -Form $form
+Enable-WindowDrag -Control $connectionLabel -Form $form
+
+$toggleMaximize={
+    if($form.WindowState -eq 'Maximized'){$form.WindowState='Normal'}else{$form.WindowState='Maximized'}
+}
+$header.Add_DoubleClick($toggleMaximize)
+$title.Add_DoubleClick($toggleMaximize)
+$subtitle.Add_DoubleClick($toggleMaximize)
 
 $metrics=New-Object Windows.Forms.FlowLayoutPanel
 $metrics.Dock='Top'
@@ -425,7 +516,7 @@ $split.Panel1.Controls.Add($grid)
 
 foreach($col in @(
     @('Chat','CHAT',58),@('Project','PROJECT',130),@('Activity','STATUS',90),
-    @('Detail','DETAIL',75),@('Time','AGE',60),@('Git','GIT',85),
+    @('Detail','DETAIL',75),@('Time','AGE',60),@('Git','GIT',135),
     @('Port','PORT',52),@('Task','TASK',180),@('Warning','WARNING',130)
 )){
     $column=New-Object Windows.Forms.DataGridViewTextBoxColumn
