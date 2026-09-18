@@ -4,7 +4,7 @@ Import-Module (Join-Path $PSScriptRoot 'ChatMulti.psm1') -Force -DisableNameChec
 $items=@(Get-WorktreeCleanupCandidates)
 
 if (-not $items.Count) {
-    Write-Host 'No hay worktrees terminados pendientes.'
+    Write-Host 'There are no finished worktrees pending cleanup.'
     exit 0
 }
 
@@ -17,8 +17,8 @@ foreach ($i in $items) {
 if ($Apply) {
     $removed=@(Invoke-SafeWorktreeCleanup)
     Write-Host ''
-    Write-Host ("Eliminados de forma segura: " + $removed.Count) -ForegroundColor Green
+    Write-Host ("Safely removed: " + $removed.Count) -ForegroundColor Green
 } else {
     Write-Host ''
-    Write-Host 'Usa -Apply para eliminar SOLO los marcados SAFE.' -ForegroundColor DarkGray
+    Write-Host 'Use -Apply to remove ONLY the entries marked SAFE.' -ForegroundColor DarkGray
 }

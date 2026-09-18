@@ -1,236 +1,248 @@
 # ChatGPT MultiChat
 
-Gestor portable para Windows pensado para cuando **varios chats de ChatGPT usan Desktop Commander sobre el mismo PC al mismo tiempo**.
+A portable Windows coordination layer for running **multiple ChatGPT chats through Desktop Commander on the same PC at the same time**.
 
-Su objetivo es reducir colisiones: cada chat obtiene una sesión identificable, un slot de color, un espacio de trabajo aislado cuando procede, un puerto de desarrollo propio y locks para recursos que no deberían usarse de forma concurrente.
+ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Estado actual: **v2.0.0**. Probado con el `SelfTest.ps1` incluido.
+> Current version: **v2.0.1**
 
-## El problema que resuelve
+## Why it exists
 
-Si varios chats ejecutan comandos locales de forma independiente, pueden terminar:
+When several chats execute local commands independently, they can easily:
 
-- modificando el mismo repositorio a la vez;
-- usando el mismo puerto de desarrollo;
-- intentando usar ADB, fastboot, scrcpy o un emulador Android simultáneamente;
-- dejando shells o sesiones huérfanas difíciles de distinguir;
-- sobrescribiendo cambios de otro chat.
+- edit the same repository at the same time;
+- start development servers on the same port;
+- compete for ADB, fastboot, scrcpy, an Android emulator, or another exclusive resource;
+- leave behind terminal sessions that are hard to identify;
+- overwrite or interfere with another chat's work.
 
-MultiChat convierte ese trabajo en sesiones coordinadas.
+MultiChat turns those independent shells into coordinated sessions.
 
-## Cómo funciona
+## How it works
 
 ```text
 ChatGPT A ─┐
 ChatGPT B ─┼─> Start-McpChatSession.ps1
 ChatGPT C ─┘          │
-                      ├─ asigna CHAT-1 ... CHAT-8
-                      ├─ registra estado y actividad
-                      ├─ crea worktree/branch aislados si corresponde
-                      ├─ reserva un puerto de desarrollo
-                      ├─ aplica locks de recursos compartidos
-                      └─ aparece en el panel MultiChat
+                      ├─ assigns CHAT-1 ... CHAT-8
+                      ├─ tracks status and activity
+                      ├─ creates an isolated Git worktree/branch when appropriate
+                      ├─ reserves a development port
+                      ├─ applies shared-resource locks
+                      └─ appears in the MultiChat dashboard
 ```
 
-Cada chat debe abrir **una sola sesión persistente** y reutilizar su PID durante todo el trabajo. Los comandos posteriores se envían a esa misma sesión.
+Each chat should open **one persistent managed session** and reuse that same process/PID for the entire task. All later commands for that chat should be sent to the same session.
 
-## Funciones principales
+## Main features
 
-- Hasta **8 chats simultáneos**, cada uno con color fijo.
-- Worktrees y ramas Git aislados por chat cuando se trabaja sobre un repositorio.
-- Reserva automática de puertos de desarrollo.
-- Locks configurables para recursos compartidos.
-- Detección de actividad: `READY`, `BUILD`, `TEST`, `GIT`, `ADB`, `SERVER`, `WAIT`, etc.
-- Panel WinForms ligero con refresco en tiempo real.
-- Historial corto de sesiones terminadas.
-- Detección y limpieza segura de worktrees ya terminados.
-- Recuperación de sesiones abandonadas o procesos desaparecidos.
-- Desktop Commander puede relanzarse oculto si deja de estar disponible.
-- Sin arranque automático: solo se ejecuta cuando tú lo abres.
-- Paquete portable sin rutas personales.
+- Up to **8 simultaneous managed chats**, each with a fixed slot color.
+- Isolated Git worktrees and branches for repository work.
+- Automatic development-port reservation.
+- Configurable locks for shared resources.
+- Activity classification such as `READY`, `BUILD`, `TEST`, `GIT`, `ADB`, `SERVER`, and `WAIT`.
+- Lightweight WinForms tray dashboard.
+- Short history of completed sessions.
+- Safe cleanup detection for finished worktrees.
+- Recovery of abandoned sessions and dead owner processes.
+- Automatic hidden restart of Desktop Commander when it is no longer available.
+- No automatic Windows startup.
+- Portable package with no machine-specific paths or runtime state.
 
-## Requisitos
+## Requirements
 
-- Windows 10/11.
-- Windows PowerShell 5.1 o superior.
+- Windows 10 or Windows 11.
+- Windows PowerShell 5.1 or later.
 - Git.
-- Node.js con `npx`.
-- Desktop Commander remoto disponible mediante `npx`.
+- Node.js with `npx`.
+- Desktop Commander available through `npx`.
 
-## Instalación rápida
+## Quick install
 
-1. Descarga el ZIP portable de la última release.
-2. Descomprímelo en una carpeta permanente.
-3. Ejecuta `Setup.cmd`.
-4. Se creará el acceso directo **ChatGPT MultiChat Agent** en el escritorio.
-5. Abre el agente antes de empezar a trabajar con varios chats.
+1. Download the portable ZIP from the latest GitHub release.
+2. Extract it to a permanent folder.
+3. Run `Setup.cmd`.
+4. A **ChatGPT MultiChat Agent** shortcut is created on the desktop.
+5. Open the agent before starting parallel Desktop Commander work.
 
-`Setup.cmd` no configura inicio automático.
+`Setup.cmd` does **not** configure automatic startup.
 
-## Cómo usarlo con ChatGPT
+## Using it with ChatGPT
 
-La forma más simple es copiar al chat el contenido de `PROMPT-PARA-CHATGPT.txt`.
+The easiest approach is to give ChatGPT the contents of `PROMPT-FOR-CHATGPT.txt`.
 
-La instrucción esencial es:
+The essential instruction is:
 
 ```text
-Usa el sistema ChatGPT MultiChat instalado en este PC para cualquier trabajo con Desktop Commander.
-Inicia una sola sesión persistente con Start-McpChatSession.ps1, reutiliza su PID durante todo
-el trabajo y no modifiques el proyecto mediante shells MCP sueltas.
+Use the ChatGPT MultiChat system installed on this PC for any Desktop Commander work.
+Start one persistent session with Start-McpChatSession.ps1, reuse its PID for the entire task,
+and do not modify the project through loose MCP shells. If you work in a Git repository,
+use the isolated worktree assigned by MultiChat. Respect resource locks and the assigned port.
 ```
 
-El chat debería iniciar una sesión similar a esta:
+A chat should start a session similar to:
 
 ```powershell
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
-  -File "C:\ruta\a\ChatGPT-MultiChat\Start-McpChatSession.ps1" `
-  -ProjectPath "C:\ruta\al\proyecto" `
-  -Task "descripcion-corta"
+  -File "C:\path\to\ChatGPT-MultiChat\Start-McpChatSession.ps1" `
+  -ProjectPath "C:\path\to\project" `
+  -Task "short-task-description"
 ```
 
-A partir de ahí, todos los comandos de ese trabajo deben enviarse al **mismo PID**.
+From that point onward, all commands for that task should be sent to the **same PID**.
 
-Para una sesión que no deba crear worktree puede usarse:
+For work that should not create a Git worktree:
 
 ```powershell
-Start-McpChatSession.ps1 -ProjectPath "C:\ruta\al\proyecto" -Task "test" -NoWorktree
+Start-McpChatSession.ps1 `
+  -ProjectPath "C:\path\to\project" `
+  -Task "test" `
+  -NoWorktree
 ```
 
-Al escribir `exit` o `quit`, la sesión se libera correctamente.
+Type `exit` or `quit` inside the managed session to release it cleanly.
 
-## El panel
+## Dashboard
 
-El panel muestra por sesión:
+The dashboard shows one row per active managed chat:
 
-| Campo | Significado |
+| Field | Meaning |
 |---|---|
-| Chat | Slot asignado (`CHAT-1` ... `CHAT-8`) |
-| Proyecto | Proyecto asociado |
-| Actividad | `LIBRE`, `TRABAJANDO` o `ABANDONADO` |
-| Detalle | Tipo de trabajo detectado |
-| Tiempo | Tiempo desde el último cambio de estado |
-| Git | Resumen del estado Git |
-| Puerto | Puerto reservado para la sesión |
-| Tarea | Descripción dada al iniciar el chat |
-| Aviso | Conflictos o situaciones que requieren atención |
+| Chat | Assigned slot (`CHAT-1` ... `CHAT-8`) |
+| Project | Associated project |
+| Activity | `FREE`, `WORKING`, or `ABANDONED` |
+| Detail | Detected command/activity type |
+| Time | Time since the last state update |
+| Git | Compact Git summary |
+| Port | Development port reserved for the session |
+| Task | Task description supplied when the session started |
+| Warning | Conflicts or conditions that need attention |
 
-Cerrar la ventana **no cierra el agente**. Permanece en la bandeja del sistema. Para detenerlo por completo usa **Salir** desde el icono de la bandeja.
+Closing the dashboard window does **not** stop the agent. It remains in the Windows system tray. Use **Exit** from the tray menu to stop it completely.
 
-## Estados y caducidad
+### Dashboard performance
 
-Cuando una sesión está en `READY`, el panel la muestra como `LIBRE`. Si permanece inactiva durante el tiempo configurado pasa a `ABANDONADO`.
+The active-chat view refreshes frequently, but heavier process/Git/worktree checks are cached and run less often. Dashboard refresh is paused while the window is being moved or resized so dragging stays responsive.
 
-Valores predeterminados:
+## Session states and expiry
 
-- `ABANDONADO`: tras 3 minutos en `READY`.
-- Sesión limpia: puede liberarse tras 10 minutos.
-- Sesión con cambios locales: espera 20 minutos.
-- Sesiones trabajando (`BUILD`, `TEST`, `ADB`, `SERVER`, etc.): no caducan por tiempo mientras están activas.
+When a managed session is in `READY`, the dashboard displays it as `FREE`. If it remains idle for the configured amount of time, it becomes `ABANDONED`.
 
-Si el proceso que poseía una sesión desaparece, MultiChat puede liberar su slot, puerto y locks.
+Default behavior:
 
-## Worktrees y seguridad Git
+- `ABANDONED`: after 3 minutes in `READY`.
+- Clean idle session: may be released after 10 minutes.
+- Idle session with local changes: waits 20 minutes.
+- Active work such as `BUILD`, `TEST`, `ADB`, or `SERVER`: does not expire while that activity is active.
 
-MultiChat no borra un worktree únicamente porque el chat haya terminado.
+If the process that owns a session disappears, MultiChat can release its slot, port, and resource locks.
 
-El panel calcula cuáles pueden limpiarse con seguridad. Un worktree solo se considera limpiable cuando no tiene cambios locales pendientes ni commits sin integrar.
+## Git worktrees
 
-Puedes usar:
+MultiChat does **not** delete a worktree just because its chat ends.
 
-- **Limpiar worktrees seguros** desde el panel.
-- `Cleanup-Worktrees.ps1` para revisar.
-- `Cleanup-Worktrees.ps1 -Apply` para aplicar la limpieza segura.
+A finished worktree is considered safe to remove only when it has no uncommitted local changes and no commits that still need to be integrated.
 
-## Locks de recursos
+You can use:
 
-`config.json` contiene reglas que detectan comandos que requieren exclusividad.
+- **Clean safe worktrees** in the dashboard;
+- `Cleanup-Worktrees.ps1` to inspect candidates;
+- `Cleanup-Worktrees.ps1 -Apply` to apply safe cleanup.
 
-La configuración incluida protege, entre otros:
+## Shared-resource locks
 
-- ADB.
-- fastboot.
-- scrcpy.
-- instalaciones APK/Gradle conectadas.
-- emulador Android y herramientas relacionadas.
+`config.json` contains regular-expression rules that identify commands requiring exclusive access.
 
-Si otro chat posee el lock correspondiente, la nueva operación no se ejecuta hasta evitar el conflicto.
+The included configuration protects, among other things:
 
-## Puertos
+- ADB;
+- fastboot;
+- scrcpy;
+- connected Gradle/APK installation operations;
+- Android emulator and SDK-management tools.
 
-Cada sesión puede reservar un puerto diferente. Por defecto se usa el rango que comienza en `3000` y dispone de 100 posiciones configurables.
+If another managed chat already owns the relevant lock, the new operation is blocked instead of being executed concurrently.
 
-Esto evita que dos chats intenten arrancar servidores de desarrollo en el mismo puerto.
+## Development ports
 
-## Configuración
+Each managed session can reserve a different development port.
 
-Los valores principales están en `config.json`:
+The default range starts at port `3000` and contains 100 configurable positions. This prevents two managed chats from accidentally starting development servers on the same port.
 
-| Opción | Predeterminado | Función |
+## Configuration
+
+The main settings live in `config.json`:
+
+| Setting | Default | Purpose |
 |---|---:|---|
-| `maxSlots` | 8 | Máximo de chats gestionados |
-| `refreshSeconds` | 1 | Refresco de información de chats |
-| `abandonedAfterMinutes` | 3 | Tiempo hasta marcar una sesión como abandonada |
-| `cleanExpireMinutes` | 10 | Caducidad de sesión limpia |
-| `dirtyExpireMinutes` | 20 | Caducidad de sesión con cambios |
-| `portRangeStart` | 3000 | Primer puerto reservable |
-| `portRangeCount` | 100 | Tamaño del rango |
-| `gitRefreshSeconds` | 5 | Frecuencia de comprobación Git |
-| `historyLimit` | 50 | Máximo de entradas de historial |
+| `maxSlots` | 8 | Maximum simultaneous managed chats |
+| `refreshSeconds` | 1 | Chat-status refresh interval |
+| `abandonedAfterMinutes` | 3 | Time before a READY session is marked abandoned |
+| `cleanExpireMinutes` | 10 | Expiry for clean idle sessions |
+| `dirtyExpireMinutes` | 20 | Expiry for idle sessions with local changes |
+| `portRangeStart` | 3000 | First reservable development port |
+| `portRangeCount` | 100 | Number of ports in the reservation pool |
+| `gitRefreshSeconds` | 5 | Git-summary refresh interval |
+| `historyLimit` | 50 | Maximum stored history entries |
 
-Las reglas de recursos también se definen en este archivo mediante expresiones regulares.
+Resource-lock rules are also defined in `config.json`.
 
-## Archivos principales
+## Main files
 
-| Archivo | Función |
+| File | Purpose |
 |---|---|
-| `ChatMulti.psm1` | Núcleo del gestor de sesiones |
-| `Start-McpChatSession.ps1` | Crea y mantiene una sesión para un chat |
-| `MultiChat-Tray.ps1` | Panel y agente de bandeja |
-| `Setup.cmd` / `Setup.ps1` | Instalación local y acceso directo |
-| `config.json` | Configuración portable |
-| `PROMPT-PARA-CHATGPT.txt` | Instrucción lista para pegar en un chat |
-| `SelfTest.cmd` / `SelfTest.ps1` | Comprobación del sistema |
-| `Cleanup-Worktrees.ps1` | Limpieza segura de worktrees |
-| `Show-History.ps1` | Consulta del historial |
-| `Make-Portable-Package.ps1` | Genera el ZIP portable |
+| `ChatMulti.psm1` | Session-management core |
+| `Start-McpChatSession.ps1` | Starts and owns one persistent managed chat session |
+| `MultiChat-Tray.ps1` | Dashboard and system-tray agent |
+| `Setup.cmd` / `Setup.ps1` | Local setup and desktop shortcut |
+| `config.json` | Portable configuration |
+| `PROMPT-FOR-CHATGPT.txt` | Ready-to-paste ChatGPT instruction |
+| `SelfTest.cmd` / `SelfTest.ps1` | System validation |
+| `Cleanup-Worktrees.ps1` | Safe worktree cleanup |
+| `Show-History.ps1` | Session-history viewer |
+| `Make-Portable-Package.ps1` | Builds the portable release ZIP |
 
-## Autocomprobación
+## Self-test
 
-Ejecuta:
+Run:
 
 ```cmd
 SelfTest.cmd
 ```
 
-La prueba comprueba dependencias, sintaxis, configuración, slots, colores y reserva de puertos.
-
-Resultado esperado:
+Expected result:
 
 ```text
 SELF-TEST: OK
-Git, Node/npx, scripts, configuracion, slots, colores y puertos: OK.
+Git, Node/npx, scripts, configuration, slots, colors and ports: OK.
 ```
 
-## Portabilidad
+The test checks dependencies, PowerShell syntax, configuration, slot behavior, fixed colors, and port reservation.
 
-El sistema usa rutas relativas a su propia carpeta y `Make-Portable-Package.ps1` genera un ZIP sin copiar el estado local, logs, sesiones ni worktrees del equipo donde se creó.
+## Portability
 
-Para generar el paquete:
+The project uses paths relative to its own folder.
+
+`Make-Portable-Package.ps1` creates a ZIP without copying machine-local runtime state, logs, sessions, or worktrees.
+
+To build a package:
 
 ```powershell
-.\Make-Portable-Package.ps1 -Version "2.0.0"
+.\Make-Portable-Package.ps1 -Version "2.0.1"
 ```
 
-## Limitaciones
+## Limitations
 
-MultiChat coordina los procesos que **entran por el propio sistema MultiChat**. No puede impedir que una terminal externa, otro programa o un chat que ignore el gestor modifique directamente el mismo repositorio o recurso.
+MultiChat coordinates processes that **use the MultiChat session system**. It cannot prevent an unrelated terminal, another application, or a chat that ignores the manager from directly editing the same repository or using the same external resource.
 
-Por eso la regla más importante es: **un chat, una sesión persistente, un PID reutilizado durante todo el trabajo**.
+The key rule is therefore:
 
-## Desinstalación
+**one chat → one persistent managed session → one reused PID for the entire task.**
 
-1. Sal del agente desde el icono de la bandeja.
-2. Borra el acceso directo del escritorio.
-3. Borra la carpeta de ChatGPT MultiChat.
+## Uninstall
 
-No instala servicios ni configura arranque automático.
+1. Exit the agent from the system-tray icon.
+2. Delete the desktop shortcut.
+3. Delete the ChatGPT MultiChat folder.
+
+No Windows service or automatic-start entry is installed.

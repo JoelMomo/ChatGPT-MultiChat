@@ -8,10 +8,10 @@ Import-Module (Join-Path $PSScriptRoot 'ChatMulti.psm1') -Force -DisableNameChec
 $session = New-ManagedChatSession -ProjectPath $ProjectPath -Task $Task -NoWorktree:$NoWorktree
 
 Write-Host ''
-Write-Host ("[CHAT-{0}] ACTIVO | {1} | {2}" -f $session.slot,$session.project,$session.task) -ForegroundColor $session.color
+Write-Host ("[CHAT-{0}] ACTIVE | {1} | {2}" -f $session.slot,$session.project,$session.task) -ForegroundColor $session.color
 Write-Host ('Workspace: ' + $session.workspace) -ForegroundColor DarkGray
-if ($session.branch) { Write-Host ('Rama: ' + $session.branch) -ForegroundColor DarkGray }
-if ($session.devPort) { Write-Host ('Puerto reservado: ' + $session.devPort) -ForegroundColor DarkGray }
+if ($session.branch) { Write-Host ('Branch: ' + $session.branch) -ForegroundColor DarkGray }
+if ($session.devPort) { Write-Host ('Reserved port: ' + $session.devPort) -ForegroundColor DarkGray }
 Write-Host ''
 
 try {
@@ -53,5 +53,5 @@ try {
 }
 finally {
     Stop-ManagedChatSession
-    Write-Host ("[CHAT-{0}] sesion cerrada." -f $session.slot) -ForegroundColor DarkGray
+    Write-Host ("[CHAT-{0}] session closed." -f $session.slot) -ForegroundColor DarkGray
 }

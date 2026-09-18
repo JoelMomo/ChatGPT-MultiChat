@@ -17,8 +17,8 @@ try{
     $cfg=Get-ChatConfig
     if([int]$cfg.maxSlots -lt 2){$errors+='maxSlots invalido'}
     $s=New-ManagedChatSession -Task 'PORTABLE-SELFTEST' -NoWorktree
-    if(-not $s.devPort){$errors+='No se reservo puerto'}
-    if((Get-ChatColor 1) -eq (Get-ChatColor 2)){$errors+='Colores CHAT-1/2 iguales'}
+    if(-not $s.devPort){$errors+='No port was reserved'}
+    if((Get-ChatColor 1) -eq (Get-ChatColor 2)){$errors+='CHAT-1/2 colors are identical'}
     Stop-ManagedChatSession
 }catch{$errors+=$_.Exception.Message}
 
@@ -28,4 +28,4 @@ if($errors.Count){
     exit 1
 }
 Write-Host 'SELF-TEST: OK' -ForegroundColor Green
-Write-Host 'Git, Node/npx, scripts, configuracion, slots, colores y puertos: OK.'
+Write-Host 'Git, Node/npx, scripts, configuration, slots, colors and ports: OK.'

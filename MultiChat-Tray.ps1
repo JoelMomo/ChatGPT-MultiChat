@@ -11,7 +11,7 @@ $cfg = Get-ChatConfig
 $createdNew = $false
 $mutex = New-Object Threading.Mutex($true,'ChatGPTMultiChatAgentV2',[ref]$createdNew)
 if (-not $createdNew) {
-    [Windows.Forms.MessageBox]::Show('ChatGPT MultiChat Agent ya esta abierto.','MultiChat') | Out-Null
+    [Windows.Forms.MessageBox]::Show('ChatGPT MultiChat Agent is already running.','MultiChat') | Out-Null
     exit 0
 }
 
@@ -113,7 +113,7 @@ $statusLabel.Location=New-Object Drawing.Point(14,37)
 $top.Controls.Add($statusLabel)
 
 $cleanupButton = New-Object Windows.Forms.Button
-$cleanupButton.Text='Limpiar worktrees seguros'
+$cleanupButton.Text='Clean safe worktrees'
 $cleanupButton.Width=190
 $cleanupButton.Height=30
 $cleanupButton.Anchor='Top,Right'
@@ -151,9 +151,9 @@ try { $db=$grid.GetType().GetProperty('DoubleBuffered',([Reflection.BindingFlags
 $split.Panel1.Controls.Add($grid)
 
 foreach ($col in @(
-    @('Chat','Chat',62),@('Project','Proyecto',140),@('Activity','Actividad',105),
-    @('Detail','Detalle',80),@('Time','Tiempo',62),@('Git','Git',95),
-    @('Port','Puerto',58),@('Task','Tarea',190),@('Warning','Aviso',155)
+    @('Chat','Chat',62),@('Project','Project',140),@('Activity','Activity',105),
+    @('Detail','Detail',80),@('Time','Time',62),@('Git','Git',95),
+    @('Port','Port',58),@('Task','Task',190),@('Warning','Warning',155)
 )) {
     $c=New-Object Windows.Forms.DataGridViewTextBoxColumn
     $c.Name=$col[0]
@@ -163,7 +163,7 @@ foreach ($col in @(
 }
 
 $historyTitle=New-Object Windows.Forms.Label
-$historyTitle.Text='Historial reciente'
+$historyTitle.Text='Recent history'
 $historyTitle.Dock='Top'
 $historyTitle.Height=25
 $historyTitle.Padding=New-Object Windows.Forms.Padding(8,4,0,0)
@@ -188,14 +188,14 @@ $notify.Text='ChatGPT MultiChat Agent'
 $notify.Visible=$true
 
 $menu=New-Object Windows.Forms.ContextMenuStrip
-$miOpen=$menu.Items.Add('Abrir panel')
-$miHide=$menu.Items.Add('Ocultar panel')
+$miOpen=$menu.Items.Add('Open dashboard')
+$miHide=$menu.Items.Add('Hide dashboard')
 [void]$menu.Items.Add('-')
-$miClean=$menu.Items.Add('Limpiar worktrees seguros')
-$miRestart=$menu.Items.Add('Reiniciar Desktop Commander')
-$miFolder=$menu.Items.Add('Abrir carpeta MultiChat')
+$miClean=$menu.Items.Add('Clean safe worktrees')
+$miRestart=$menu.Items.Add('Restart Desktop Commander')
+$miFolder=$menu.Items.Add('Open MultiChat folder')
 [void]$menu.Items.Add('-')
-$miExit=$menu.Items.Add('Salir')
+$miExit=$menu.Items.Add('Exit')
 $notify.ContextMenuStrip=$menu
 
 $miOpen.Add_Click({$form.Show();$form.WindowState='Normal';$form.Activate()})
@@ -207,13 +207,13 @@ $notify.Add_DoubleClick({$form.Show();$form.WindowState='Normal';$form.Activate(
 function Invoke-CleanupFromUi {
     $safe=@($script:cleanupCandidates | Where-Object safe)
     if (-not $safe.Count) {
-        [Windows.Forms.MessageBox]::Show('No hay worktrees seguros para limpiar.','MultiChat') | Out-Null
+        [Windows.Forms.MessageBox]::Show('There are no safe worktrees to clean.','MultiChat') | Out-Null
         return
     }
-    $msg="Se eliminaran $($safe.Count) worktrees limpios y sin commits pendientes. Continuar?"
+    $msg="$($safe.Count) clean worktrees with no pending commits will be removed. Continue?"
     if ([Windows.Forms.MessageBox]::Show($msg,'MultiChat','YesNo','Question') -eq 'Yes') {
         $removed=@(Invoke-SafeWorktreeCleanup)
-        [Windows.Forms.MessageBox]::Show("Eliminados: $($removed.Count)",'MultiChat') | Out-Null
+        [Windows.Forms.MessageBox]::Show("Removed: $($removed.Count)",'MultiChat') | Out-Null
     }
 }
 $cleanupButton.Add_Click({Invoke-CleanupFromUi})
@@ -224,7 +224,7 @@ $form.Add_FormClosing({
     if (-not $script:exiting) {
         $e.Cancel=$true
         $form.Hide()
-        $notify.ShowBalloonTip(1000,'MultiChat','Sigue activo en la bandeja.','Info')
+        $notify.ShowBalloonTip(1000,'MultiChat','Still running in the system tray.','Info')
     }
 })
 
@@ -259,10 +259,10 @@ function Refresh-Dashboard {
     foreach ($s in $sessions) {
         $idle=Get-SessionIdleInfo $s
         if ($s.status -eq 'READY') {
-            $activity=if($idle.abandoned){'ABANDONADO'}else{'LIBRE'}
+            $activity=if($idle.abandoned){'ABANDONED'}else{'FREE'}
             $detail=''
         } else {
-            $activity='TRABAJANDO'
+            $activity='WORKING'
             $detail=[string]$s.status
         }
 
@@ -271,7 +271,7 @@ function Refresh-Dashboard {
         $port=Get-ChatProp $s 'devPort' ''
         $warning=''
         if ($s.originRepo -and $conflictRepos.ContainsKey([string]$s.originRepo)) {
-            $warning="MISMO PROYECTO x$($conflictRepos[[string]$s.originRepo])"
+            $warning="SAME PROJECT x$($conflictRepos[[string]$s.originRepo])"
         }
 
         $row=$rowIndex; $rowIndex++; $grid.Rows[$row].SetValues(
@@ -282,9 +282,9 @@ function Refresh-Dashboard {
         $grid.Rows[$row].Cells['Chat'].Style.ForeColor=[Drawing.Color]::Black
         $grid.Rows[$row].Cells['Chat'].Style.SelectionBackColor=Get-SlotColor ([int]$s.slot)
         $grid.Rows[$row].Cells['Chat'].Style.SelectionForeColor=[Drawing.Color]::Black
-        if ($activity -eq 'TRABAJANDO') {
+        if ($activity -eq 'WORKING') {
             $grid.Rows[$row].Cells['Activity'].Style.ForeColor=[Drawing.Color]::Gold
-        } elseif ($activity -eq 'ABANDONADO') {
+        } elseif ($activity -eq 'ABANDONED') {
             $grid.Rows[$row].Cells['Activity'].Style.ForeColor=[Drawing.Color]::OrangeRed
         } else {
             $grid.Rows[$row].Cells['Activity'].Style.ForeColor=[Drawing.Color]::LimeGreen
@@ -308,8 +308,8 @@ function Refresh-Dashboard {
     $pending=$script:cachedPending
 
 
-    $dc=if($remote.Count){'ONLINE'}else{'RECONECTANDO'}
-    $statusLabel.Text="Desktop Commander: $dc   |   Chats: $($sessions.Count)/$($cfg.maxSlots)   |   Worktrees: $safe limpiables, $pending pendientes"
+    $dc=if($remote.Count){'ONLINE'}else{'RECONNECTING'}
+    $statusLabel.Text="Desktop Commander: $dc   |   Chats: $($sessions.Count)/$($cfg.maxSlots)   |   Worktrees: $safe safe, $pending pending"
     $statusLabel.ForeColor=if($remote.Count){[Drawing.Color]::LimeGreen}else{[Drawing.Color]::OrangeRed}
 
     $history=@(Get-ChatHistory -Limit 12 | Select-Object -Last 12)

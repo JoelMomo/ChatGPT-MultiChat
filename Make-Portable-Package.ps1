@@ -1,4 +1,4 @@
-param([string]$Version='2.0.0')
+param([string]$Version='2.0.1')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $dist=Join-Path $root 'dist'
@@ -20,4 +20,4 @@ foreach($dir in @('state\locks','state\sessions','state\slots','state\ports','st
 
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
 Remove-Item $stage -Recurse -Force
-Write-Host ('Portable creado: '+$zip) -ForegroundColor Green
+Write-Host ('Portable package created: '+$zip) -ForegroundColor Green

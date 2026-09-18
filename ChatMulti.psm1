@@ -118,7 +118,7 @@ function Claim-ChatSlot([string]$SessionId) {
             return $slot
         } catch {}
     }
-    throw ("No quedan slots libres (maximo {0} sesiones gestionadas simultaneas)." -f $maxSlots)
+    throw ("No free slots remain (maximum {0} simultaneous managed sessions)." -f $maxSlots)
 }
 
 function Resolve-ChatCommandStatus([string]$Line) {
@@ -163,7 +163,7 @@ function Acquire-ChatResource {
     param([Parameter(Mandatory)][string]$Resource)
     Initialize-ChatMulti
     $s = Get-ManagedChatSession
-    if ($null -eq $s) { throw 'Esta PowerShell no es una sesion ChatGPT gestionada.' }
+    if ($null -eq $s) { throw 'This PowerShell is not a managed ChatGPT session.' }
     $name = ($Resource -replace '[^a-zA-Z0-9._-]','_').ToLowerInvariant()
     $path = Join-Path $script:LockRoot "$name.json"
 
@@ -171,7 +171,7 @@ function Acquire-ChatResource {
         $old = Read-ChatJson $path
         if ($old -and $old.sessionId -eq $s.id) { return $true }
         if ($old -and (Test-ChatProcessAlive ([int]$old.pid))) {
-            Write-Host ("Recurso '{0}' ocupado por CHAT-{1} ({2})." -f $Resource,$old.slot,$old.project) -ForegroundColor Red
+            Write-Host ("Resource '{0}' is in use by CHAT-{1} ({2})." -f $Resource,$old.slot,$old.project) -ForegroundColor Red
             return $false
         }
         Remove-Item $path -Force -ErrorAction SilentlyContinue
@@ -184,7 +184,7 @@ function Acquire-ChatResource {
         try { $fs.Write($bytes,0,$bytes.Length) } finally { $fs.Dispose() }
         return $true
     } catch {
-        Write-Host ("No se pudo bloquear '{0}'." -f $Resource) -ForegroundColor Red
+        Write-Host ("Could not acquire lock for '{0}'." -f $Resource) -ForegroundColor Red
         return $false
     }
 }
@@ -210,7 +210,7 @@ function Get-ChatResourceLocks {
 }
 
 function Install-ManagedChatPrompt {
-    if (-not $env:CHATGPT_SESSION_ID) { throw 'No hay sesion gestionada activa.' }
+    if (-not $env:CHATGPT_SESSION_ID) { throw 'There is no active managed session.' }
 
     function global:prompt {
         try {
@@ -242,7 +242,7 @@ function Install-ManagedChatPrompt {
             if ($status -eq 'ADB') {
                 if (-not (Acquire-ChatResource -Resource 'adb-thor')) {
                     Write-Host ''
-                    Write-Host 'Comando ADB bloqueado para evitar colision con otra sesion.' -ForegroundColor Red
+                    Write-Host 'ADB command blocked to avoid a collision with another session.' -ForegroundColor Red
                     return
                 }
                 $script:AutoResourceLock = 'adb-thor'
@@ -298,7 +298,7 @@ function New-ManagedChatSession {
                 & git -C $repoRoot worktree add -b $branch $workspace HEAD | Out-Null
                 if (-not (Test-Path -LiteralPath (Join-Path $workspace '.git'))) {
                     Remove-Item (Join-Path $script:SlotRoot "slot-$slot.json") -Force -ErrorAction SilentlyContinue
-                    throw 'No se pudo crear el git worktree aislado.'
+                    throw 'Could not create the isolated Git worktree.'
                 }
                 $isolated = $true
             } else {
@@ -342,7 +342,7 @@ function Stop-ManagedChatSession {
 function Show-ManagedChatStatus {
     $sessions = @(Get-ManagedChatSessions | Where-Object active | Sort-Object slot)
     if (-not $sessions.Count) {
-        Write-Host 'No hay sesiones gestionadas activas.'
+        Write-Host 'There are no active managed sessions.'
         return
     }
 

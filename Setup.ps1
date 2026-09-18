@@ -16,8 +16,8 @@ $s.Description='ChatGPT MultiChat Agent'
 $s.IconLocation='powershell.exe,0'
 $s.Save()
 
-Write-Host 'ChatGPT MultiChat preparado.' -ForegroundColor Green
-Write-Host ('Carpeta: '+$root)
-Write-Host ('Acceso directo: '+$lnk)
+Write-Host 'ChatGPT MultiChat is ready.' -ForegroundColor Green
+Write-Host ('Folder: '+$root)
+Write-Host ('Shortcut: '+$lnk)
 Write-Host ''
-Write-Host 'No se ha configurado arranque automatico.' -ForegroundColor DarkGray
+Write-Host 'Automatic startup has not been configured.' -ForegroundColor DarkGray
