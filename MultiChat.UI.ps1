@@ -310,6 +310,66 @@ function Show-MultiChatInfo {
 }
 
 
+function Show-MultiChatReleaseNotes {
+    param(
+        [Parameter(Mandatory)]$Owner,
+        [Parameter(Mandatory)][string]$Version,
+        [string]$Notes='',
+        [string]$ReleaseUrl=''
+    )
+
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text="What's new in v$Version"
+    $dialog.Size=New-Object Drawing.Size(640,460)
+    $dialog.MinimumSize=$dialog.Size
+    $dialog.MaximumSize=$dialog.Size
+    $dialog.StartPosition='CenterParent'
+    $dialog.BackColor=$script:UiColors.Surface
+    $dialog.ForeColor=$script:UiColors.Text
+    $dialog.FormBorderStyle='None'
+    $dialog.ShowInTaskbar=$false
+
+    $titleLabel=New-Object Windows.Forms.Label
+    $titleLabel.Text="What's new in v$Version"
+    $titleLabel.AutoSize=$true
+    $titleLabel.Font=New-Object Drawing.Font('Segoe UI Semibold',12)
+    $titleLabel.ForeColor=$script:UiColors.Text
+    $titleLabel.Location=New-Object Drawing.Point(18,15)
+    $dialog.Controls.Add($titleLabel)
+
+    $notesBox=New-Object Windows.Forms.TextBox
+    $notesBox.Multiline=$true
+    $notesBox.ReadOnly=$true
+    $notesBox.ScrollBars='Vertical'
+    $notesBox.BorderStyle='FixedSingle'
+    $notesBox.BackColor=$script:UiColors.Surface2
+    $notesBox.ForeColor=$script:UiColors.Text
+    $notesBox.Font=New-Object Drawing.Font('Segoe UI',9.5)
+    $notesBox.Location=New-Object Drawing.Point(18,52)
+    $notesBox.Size=New-Object Drawing.Size(604,340)
+    $notesBox.Text=if([string]::IsNullOrWhiteSpace($Notes)){'No release notes were provided.'}else{$Notes}
+    $dialog.Controls.Add($notesBox)
+
+    $closeButton=New-FlatButton -Text 'Close' -Width 105 -Accent
+    $closeButton.Location=New-Object Drawing.Point(517,408)
+    $closeButton.DialogResult=[Windows.Forms.DialogResult]::OK
+    $dialog.Controls.Add($closeButton)
+
+    if($ReleaseUrl){
+        $releaseButton=New-FlatButton -Text 'Open release' -Width 120
+        $releaseButton.Location=New-Object Drawing.Point(386,408)
+        $releaseButton.Add_Click({Start-Process -FilePath $ReleaseUrl}.GetNewClosure())
+        $dialog.Controls.Add($releaseButton)
+    }
+
+    $dialog.AcceptButton=$closeButton
+    $dialog.CancelButton=$closeButton
+    Enable-WindowDrag -Control $titleLabel -Form $dialog
+
+    try{[void]$dialog.ShowDialog($Owner)}
+    finally{$dialog.Dispose()}
+}
+
 function New-WindowButton {
     param(
         [Parameter(Mandatory)][string]$Text,

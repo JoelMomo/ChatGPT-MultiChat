@@ -12,7 +12,8 @@ foreach($required in @(
     'ChatMulti.psm1','ChatMulti.Advanced.ps1','ChatMulti.Hardening.ps1',
     'MultiChat-Tray.ps1','MultiChat.UI.ps1','MultiChat-Maintenance.ps1',
     'Cleanup-Worktrees.ps1','Validate-ManagedSession.ps1','Invoke-ManagedExternal.ps1','HardeningTest.ps1',
-    'Check-Updates.ps1','config.json','PROMPT-FOR-CHATGPT.txt'
+    'Check-Updates.ps1','Update-MultiChat.ps1','Sign-ReleasePackage.ps1','Test-ReleaseSignature.ps1','Publish-Release.ps1',
+    'RELEASE-PUBLIC-KEY.xml','config.json','PROMPT-FOR-CHATGPT.txt'
 )){
     if(-not(Test-Path -LiteralPath (Join-Path $root $required))){
         $errors+="Missing file: $required"
@@ -41,10 +42,23 @@ try{
     if([int](Get-ChatProp $cfg 'defaultLeaseTtlMinutes' 0) -lt 1){$errors+='defaultLeaseTtlMinutes is invalid'}
     if(-not [bool](Get-ChatProp $cfg 'checkForUpdates' $false)){$errors+='checkForUpdates should default to true'}
     if([int](Get-ChatProp $cfg 'updateCheckHours' 0) -lt 1){$errors+='updateCheckHours is invalid'}
+    if([string](Get-ChatProp $cfg 'updateChannel' '') -notin @('stable','beta')){$errors+='updateChannel is invalid'}
+
+    try{
+        $csp=New-Object Security.Cryptography.CspParameters
+        $csp.ProviderType=24
+        $rsa=New-Object Security.Cryptography.RSACryptoServiceProvider($csp)
+        try{
+            $rsa.FromXmlString([IO.File]::ReadAllText((Join-Path $root 'RELEASE-PUBLIC-KEY.xml')))
+            if($rsa.KeySize -lt 3072){$errors+='Release public key is too small'}
+        }finally{$rsa.Dispose()}
+    }catch{
+        $errors+='Release public key could not be loaded'
+    }
 
     $updateResult=Join-Path $root 'state\selftest-update.json'
     Remove-Item $updateResult -Force -ErrorAction SilentlyContinue
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Check-Updates.ps1') -CurrentVersion '2.2.1' -ResultFile $updateResult -MockLatestVersion '9.9.9' -MockReleaseUrl 'https://example.invalid/v9.9.9'
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Check-Updates.ps1') -CurrentVersion '2.3.0' -ResultFile $updateResult -MockLatestVersion '9.9.9' -MockReleaseUrl 'https://example.invalid/v9.9.9'
     if($LASTEXITCODE -ne 0 -or -not (Test-Path $updateResult)){
         $errors+='Update checker mock-newer test did not produce a result'
     }else{
@@ -62,6 +76,28 @@ try{
         $updateProbe=Get-Content $updateResult -Raw|ConvertFrom-Json
         if([bool]$updateProbe.updateAvailable){
             $errors+='Update checker incorrectly flagged the installed version as outdated'
+        }
+    }
+    Remove-Item $updateResult -Force -ErrorAction SilentlyContinue
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Check-Updates.ps1') -CurrentVersion '2.3.0-beta.1' -ResultFile $updateResult -Channel beta -MockLatestVersion '2.3.0-beta.2' -MockPrerelease
+    if($LASTEXITCODE -ne 0 -or -not (Test-Path $updateResult)){
+        $errors+='Update checker prerelease test did not produce a result'
+    }else{
+        $updateProbe=Get-Content $updateResult -Raw|ConvertFrom-Json
+        if(-not [bool]$updateProbe.updateAvailable){
+            $errors+='Update checker did not order beta prereleases correctly'
+        }
+    }
+    Remove-Item $updateResult -Force -ErrorAction SilentlyContinue
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Check-Updates.ps1') -CurrentVersion '2.3.0' -ResultFile $updateResult -Channel beta -MockLatestVersion '2.3.0-beta.9' -MockPrerelease
+    if($LASTEXITCODE -ne 0 -or -not (Test-Path $updateResult)){
+        $errors+='Update checker stable-vs-beta test did not produce a result'
+    }else{
+        $updateProbe=Get-Content $updateResult -Raw|ConvertFrom-Json
+        if([bool]$updateProbe.updateAvailable){
+            $errors+='Update checker incorrectly ranked a prerelease above the same stable version'
         }
     }
     Remove-Item $updateResult -Force -ErrorAction SilentlyContinue

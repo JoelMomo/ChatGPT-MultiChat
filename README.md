@@ -4,7 +4,7 @@ A portable Windows coordination layer for running **multiple ChatGPT chats throu
 
 ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Current version: **v2.2.1**
+> Current version: **v2.3.0**
 
 ## Why it exists
 
@@ -51,8 +51,25 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Recovery of abandoned sessions and dead owner processes.
 - Desktop Commander connection status with green/yellow/red LED, plus an On/Off connection switch.
 - Automatic hidden restart of Desktop Commander while the connection switch is On.
+- Stable/Beta update channels with manual **Check now**.
+- In-app release notes and signed portable self-updates.
+- SHA-256 + RSA-4096 verification before an update is installed.
+- One-command signed release publishing for the maintainer.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+
+## What's new in v2.3.0
+
+- Added a real portable self-updater. **Install update** downloads, verifies, stages, installs, and restarts MultiChat.
+- Updates require both a matching SHA-256 checksum and a valid RSA-4096 package signature before any application files are replaced.
+- Added **Stable** and **Beta** update channels with correct SemVer prerelease ordering.
+- Added **Check now** in the dashboard and tray menu.
+- Added an in-app **What's new** dialog using GitHub release notes.
+- User configuration is merged into new defaults during updates; runtime state and workspaces are never replaced.
+- Failed updates roll application files back and record a result for the next launch.
+- Git checkouts are never overwritten by the self-updater; they fall back to the GitHub release page.
+- Added `Sign-ReleasePackage.ps1`, `Test-ReleaseSignature.ps1`, and `Publish-Release.ps1`.
+- The release public key is shipped with MultiChat; the private signing key remains outside the repository.
 
 ## What's new in v2.2.1
 
@@ -333,6 +350,7 @@ The main settings live in `config.json`:
 | `maxSlots` | 8 | Maximum simultaneous managed chats |
 | `checkForUpdates` | true | Check GitHub Releases for newer MultiChat versions |
 | `updateCheckHours` | 24 | Minimum interval between successful release checks |
+| `updateChannel` | stable | Release channel: `stable` or `beta` |
 | `refreshSeconds` | 1 | Lightweight chat-status/UI refresh interval |
 | `maintenanceRefreshSeconds` | 15 | Background Git, expiry, liveness, and Desktop Commander maintenance interval |
 | `historyRefreshSeconds` | 5 | Recent-history refresh interval |
@@ -348,6 +366,37 @@ The main settings live in `config.json`:
 
 Additional static resource-lock rules are defined in `config.json`. Android serial and AVD identities are resolved dynamically by MultiChat.
 
+## Updates and release signing
+
+The dashboard supports two release channels:
+
+- **Stable** uses the latest non-prerelease GitHub Release.
+- **Beta** considers both stable releases and prereleases and compares them using SemVer precedence.
+
+**Check now** bypasses the local release cache. **What's new** shows the release notes inside MultiChat. **Later** dismisses the current notification until the app restarts or a different release is discovered.
+
+For ordinary portable installations, **Install update** runs a signed in-place update. MultiChat downloads three matching assets:
+
+- `ChatGPT-MultiChat-VERSION-portable.zip`
+- `ChatGPT-MultiChat-VERSION-portable.zip.sha256`
+- `ChatGPT-MultiChat-VERSION-portable.zip.sig`
+
+The ZIP must match its SHA-256 file and verify against the bundled RSA-4096 public key before staging begins. Runtime directories such as `state/`, `workspaces/`, and `dist/` are not replaced. Existing user configuration is merged over the new default configuration.
+
+Git checkouts are intentionally excluded from in-place updates to avoid dirtying or overwriting a developer repository.
+
+Release public-key SHA-256 fingerprint:
+
+`1b602bccff512c84efbc67fda6a4bdbcafb61d484102dc5ff973f59107f3e3dd`
+
+The private signing key is stored outside the repository on the maintainer machine. To publish a signed release after updating `VERSION`:
+
+```powershell
+.\Publish-Release.ps1
+```
+
+This runs the self-test, builds the portable ZIP, creates the SHA-256 file, signs the ZIP, verifies the signature locally, and creates the GitHub Release. Versions containing a prerelease suffix such as `2.4.0-beta.1` are published with GitHub's prerelease flag.
+
 ## Main files
 
 | File | Purpose |
@@ -358,7 +407,12 @@ Additional static resource-lock rules are defined in `config.json`. Android seri
 | `MultiChat-Tray.ps1` | Lightweight dashboard orchestration and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
 | `MultiChat-Maintenance.ps1` | Background Git, expiry, liveness, and Desktop Commander maintenance worker |
-| `Check-Updates.ps1` | Background GitHub Releases checker with cached version comparison |
+| `Check-Updates.ps1` | Background GitHub Releases checker with Stable/Beta SemVer comparison and cached release notes |
+| `Update-MultiChat.ps1` | Signed portable self-updater with staging, rollback, and config preservation |
+| `Sign-ReleasePackage.ps1` | Maintainer-side RSA package signer |
+| `Test-ReleaseSignature.ps1` | Public RSA signature verifier |
+| `Publish-Release.ps1` | One-command test/build/checksum/sign/verify/GitHub release publisher |
+| `RELEASE-PUBLIC-KEY.xml` | Public RSA-4096 key used by the updater to verify release packages |
 | `Start-McpChatSession.ps1` | Starts and owns one persistent managed chat session |
 | `Setup.cmd` / `Setup.ps1` | Local setup and desktop shortcut |
 | `config.json` | Portable configuration |
@@ -397,7 +451,7 @@ The project uses paths relative to its own folder.
 To build a package:
 
 ```powershell
-.\Make-Portable-Package.ps1 -Version "2.2.1"
+.\Make-Portable-Package.ps1 -Version "2.3.0"
 ```
 
 ## Limitations

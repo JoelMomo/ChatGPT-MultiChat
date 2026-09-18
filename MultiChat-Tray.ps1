@@ -46,8 +46,13 @@ $script:lastUpdateCheckStart=[datetime]::MinValue
 $script:updateAvailable=$false
 $script:updateDismissed=$false
 $script:updateNotified=$false
+$script:manualUpdateCheckPending=$false
+$script:suppressChannelChange=$false
 $script:latestVersion=''
 $script:latestReleaseUrl=''
+$script:latestReleaseNotes=''
+$script:latestPrerelease=$false
+$script:latestAssets=@()
 $script:currentVersion=if(Test-Path (Join-Path $root 'VERSION')){(Get-Content (Join-Path $root 'VERSION') -Raw).Trim()}else{'0.0.0'}
 
 $stateCacheRoot=Join-Path $root 'state\cache'
@@ -125,22 +130,52 @@ function Get-GitSnapshot {
     return $script:gitCache[$id]
 }
 
+function Set-ConfigProperty {
+    param([Parameter(Mandatory)][string]$Name,$Value)
+    $configPath=Join-Path $root 'config.json'
+    try{
+        $obj=Get-Content -LiteralPath $configPath -Raw|ConvertFrom-Json
+        $prop=$obj.PSObject.Properties[$Name]
+        if($prop){$prop.Value=$Value}else{$obj|Add-Member -NotePropertyName $Name -NotePropertyValue $Value}
+        [IO.File]::WriteAllText($configPath,($obj|ConvertTo-Json -Depth 20),(New-Object Text.UTF8Encoding($false)))
+        $cfgProp=$cfg.PSObject.Properties[$Name]
+        if($cfgProp){$cfgProp.Value=$Value}else{$cfg|Add-Member -NotePropertyName $Name -NotePropertyValue $Value}
+        return $true
+    }catch{
+        return $false
+    }
+}
+
+function Get-UpdateChannel {
+    $channel=[string](Get-ChatProp $cfg 'updateChannel' 'stable')
+    if($channel -notin @('stable','beta')){$channel='stable'}
+    return $channel
+}
+
 function Start-UpdateCheck {
-    if(-not [bool](Get-ChatProp $cfg 'checkForUpdates' $true)){return}
+    param(
+        [switch]$Force,
+        [switch]$Manual
+    )
+    if(-not [bool](Get-ChatProp $cfg 'checkForUpdates' $true) -and -not $Force){return}
     if($script:updateProcess -and -not $script:updateProcess.HasExited){return}
 
     $result=Join-Path $stateCacheRoot 'update-result.json'
     Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
     $hours=[int](Get-ChatProp $cfg 'updateCheckHours' 24)
     if($hours -lt 1){$hours=24}
+    $channel=Get-UpdateChannel
     $args=@(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
         '-File',(Join-Path $root 'Check-Updates.ps1'),
         '-CurrentVersion',$script:currentVersion,
         '-ResultFile',$result,
         '-CacheFile',$script:updateCacheFile,
-        '-CacheHours',$hours
+        '-CacheHours',$hours,
+        '-Channel',$channel
     )
+    if($Force){$args+='-Force'}
+    $script:manualUpdateCheckPending=[bool]$Manual
     $script:updateResultFile=$result
     $script:updateProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
     $script:lastUpdateCheckStart=Get-Date
@@ -149,21 +184,37 @@ function Start-UpdateCheck {
 function Complete-UpdateCheck {
     if(-not $script:updateProcess -or -not $script:updateProcess.HasExited){return $false}
 
+    $success=$false
     if($script:updateResultFile -and (Test-Path -LiteralPath $script:updateResultFile)){
         try{
             $result=Get-Content -LiteralPath $script:updateResultFile -Raw|ConvertFrom-Json
             if([bool](Get-ChatProp $result 'success' $false)){
+                $success=$true
+                $previousLatest=$script:latestVersion
                 $script:updateAvailable=[bool](Get-ChatProp $result 'updateAvailable' $false)
                 $script:latestVersion=[string](Get-ChatProp $result 'latestVersion' '')
                 $script:latestReleaseUrl=[string](Get-ChatProp $result 'releaseUrl' '')
+                $script:latestReleaseNotes=[string](Get-ChatProp $result 'releaseNotes' '')
+                $script:latestPrerelease=[bool](Get-ChatProp $result 'prerelease' $false)
+                $script:latestAssets=@(Get-ChatProp $result 'assets' @())
+                if($previousLatest -and $previousLatest -ne $script:latestVersion){
+                    $script:updateDismissed=$false
+                    $script:updateNotified=$false
+                }
             }
         }catch{}
     }
 
+    $manual=$script:manualUpdateCheckPending
+    $script:manualUpdateCheckPending=$false
     $script:updateProcess.Dispose()
     $script:updateProcess=$null
     if($script:updateResultFile){Remove-Item -LiteralPath $script:updateResultFile -Force -ErrorAction SilentlyContinue}
     $script:updateResultFile=$null
+
+    if($manual -and $success -and -not $script:updateAvailable){
+        try{$notify.ShowBalloonTip(2500,'MultiChat',"v$($script:currentVersion) is up to date.",'Info')}catch{}
+    }
     return $true
 }
 
@@ -172,27 +223,72 @@ function Update-UpdateUi {
         $versionLabel.Text="v$($script:currentVersion)"
         $versionLabel.ForeColor=$script:UiColors.Muted
         $updateButton.Visible=$false
+        $notesButton.Visible=$false
         $laterButton.Visible=$false
         return
     }
 
     if($script:updateAvailable -and -not $script:updateDismissed){
-        $versionLabel.Text="v$($script:currentVersion)  ·  v$($script:latestVersion) available"
+        $versionLabel.Text="v$($script:currentVersion)  -  v$($script:latestVersion) available"
         $versionLabel.ForeColor=$script:UiColors.Warn
-        $updateButton.Text='Download update'
+        $updateButton.Text='Install update'
         $updateButton.Visible=$true
+        $notesButton.Visible=$true
         $laterButton.Visible=$true
 
         if(-not $script:updateNotified){
             $script:updateNotified=$true
-            try{$notify.ShowBalloonTip(3500,'MultiChat update available',"Version $($script:latestVersion) is ready to download.",'Info')}catch{}
+            try{$notify.ShowBalloonTip(3500,'MultiChat update available',"Version $($script:latestVersion) is ready to install.",'Info')}catch{}
         }
     }else{
         $versionLabel.Text="v$($script:currentVersion)"
         $versionLabel.ForeColor=$script:UiColors.Muted
         $updateButton.Visible=$false
+        $notesButton.Visible=$false
         $laterButton.Visible=$false
     }
+}
+
+function Start-SelfUpdate {
+    if(-not $script:updateAvailable -or -not $script:latestVersion){return}
+
+    if(Test-Path -LiteralPath (Join-Path $root '.git')){
+        Show-MultiChatInfo -Owner $form -Title 'Git checkout detected' -Message 'Automatic in-place updates are disabled for Git checkouts. The release page will be opened instead.'
+        if($script:latestReleaseUrl){Start-Process -FilePath $script:latestReleaseUrl}
+        return
+    }
+
+    $zip="ChatGPT-MultiChat-$($script:latestVersion)-portable.zip"
+    $required=@($zip,"$zip.sha256","$zip.sig")
+    $missing=@($required|Where-Object{$_ -notin $script:latestAssets})
+    if($missing.Count){
+        Show-MultiChatInfo -Owner $form -Title 'Signed update unavailable' -Message 'This release does not contain the complete signed update package. The release page will be opened instead.'
+        if($script:latestReleaseUrl){Start-Process -FilePath $script:latestReleaseUrl}
+        return
+    }
+
+    $ok=Show-MultiChatConfirm -Owner $form -Title 'Install MultiChat update?' -Message ("Install v{0} now? MultiChat will restart automatically after signature verification." -f $script:latestVersion)
+    if(-not $ok){return}
+
+    $args=@(
+        '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
+        '-File',(Join-Path $root 'Update-MultiChat.ps1'),
+        '-TargetVersion',$script:latestVersion,
+        '-InstallRoot',$root,
+        '-Repository','JoelMomo/ChatGPT-MultiChat',
+        '-ReleaseUrl',$script:latestReleaseUrl,
+        '-ParentPid',[string]$PID
+    )
+    Start-Process powershell.exe -WorkingDirectory $env:TEMP -ArgumentList $args -WindowStyle Hidden|Out-Null
+
+    $script:exiting=$true
+    if($script:maintenanceProcess -and -not $script:maintenanceProcess.HasExited){$script:maintenanceProcess.Kill()}
+    if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){$script:cleanupScanProcess.Kill()}
+    if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){$script:cleanupProcess.Kill()}
+    if($script:updateProcess -and -not $script:updateProcess.HasExited){$script:updateProcess.Kill()}
+    $notify.Visible=$false
+    $form.Close()
+    [Windows.Forms.Application]::Exit()
 }
 
 function Start-MaintenanceWorker {
@@ -638,22 +734,27 @@ $form.Controls.Add($actionPanel)
 
 $actionButtons=New-Object Windows.Forms.Panel
 $actionButtons.Dock='Right'
-$actionButtons.Width=455
+$actionButtons.Width=540
 $actionButtons.BackColor=$script:UiColors.Surface
 $actionPanel.Controls.Add($actionButtons)
 
-$updateButton=New-FlatButton -Text 'Download update' -Width 160
-$updateButton.Location=New-Object Drawing.Point(0,8)
+$notesButton=New-FlatButton -Text "What's new" -Width 100
+$notesButton.Location=New-Object Drawing.Point(0,8)
+$notesButton.Visible=$false
+$actionButtons.Controls.Add($notesButton)
+
+$updateButton=New-FlatButton -Text 'Install update' -Width 130
+$updateButton.Location=New-Object Drawing.Point(108,8)
 $updateButton.Visible=$false
 $actionButtons.Controls.Add($updateButton)
 
 $laterButton=New-FlatButton -Text 'Later' -Width 70
-$laterButton.Location=New-Object Drawing.Point(168,8)
+$laterButton.Location=New-Object Drawing.Point(246,8)
 $laterButton.Visible=$false
 $actionButtons.Controls.Add($laterButton)
 
 $cleanupButton=New-FlatButton -Text 'Clean safe worktrees' -Width 205 -Accent
-$cleanupButton.Location=New-Object Drawing.Point(246,8)
+$cleanupButton.Location=New-Object Drawing.Point(324,8)
 $actionButtons.Controls.Add($cleanupButton)
 
 $cleanupHint=New-Object Windows.Forms.Label
@@ -661,7 +762,7 @@ $cleanupHint.Text='Worktree checks run in the background.'
 $cleanupHint.AutoSize=$true
 $cleanupHint.ForeColor=$script:UiColors.Muted
 $cleanupHint.Font=New-Object Drawing.Font('Segoe UI',9)
-$cleanupHint.Location=New-Object Drawing.Point(12,10)
+$cleanupHint.Location=New-Object Drawing.Point(12,9)
 $actionPanel.Controls.Add($cleanupHint)
 
 $versionLabel=New-Object Windows.Forms.Label
@@ -669,8 +770,27 @@ $versionLabel.Text="v$($script:currentVersion)"
 $versionLabel.AutoSize=$true
 $versionLabel.ForeColor=$script:UiColors.Muted
 $versionLabel.Font=New-Object Drawing.Font('Segoe UI',8.5)
-$versionLabel.Location=New-Object Drawing.Point(12,38)
+$versionLabel.Location=New-Object Drawing.Point(12,39)
 $actionPanel.Controls.Add($versionLabel)
+
+$channelCombo=New-Object Windows.Forms.ComboBox
+$channelCombo.DropDownStyle='DropDownList'
+$channelCombo.FlatStyle='Flat'
+$channelCombo.BackColor=$script:UiColors.Surface2
+$channelCombo.ForeColor=$script:UiColors.Text
+$channelCombo.Font=New-Object Drawing.Font('Segoe UI',8.5)
+$channelCombo.Size=New-Object Drawing.Size(82,24)
+$channelCombo.Location=New-Object Drawing.Point(74,32)
+[void]$channelCombo.Items.Add('Stable')
+[void]$channelCombo.Items.Add('Beta')
+$script:suppressChannelChange=$true
+$channelCombo.SelectedItem=if((Get-UpdateChannel) -eq 'beta'){'Beta'}else{'Stable'}
+$script:suppressChannelChange=$false
+$actionPanel.Controls.Add($channelCombo)
+
+$checkNowButton=New-FlatButton -Text 'Check now' -Width 92
+$checkNowButton.Location=New-Object Drawing.Point(165,28)
+$actionPanel.Controls.Add($checkNowButton)
 
 $split=New-Object Windows.Forms.SplitContainer
 $split.Dock='Fill'
@@ -763,26 +883,65 @@ $miOpen=$menu.Items.Add('Open dashboard')
 $miHide=$menu.Items.Add('Hide dashboard')
 [void]$menu.Items.Add('-')
 $miClean=$menu.Items.Add('Clean safe worktrees')
+$miCheckUpdate=$menu.Items.Add('Check for updates now')
 $miRestart=$menu.Items.Add('Restart Desktop Commander')
 $miFolder=$menu.Items.Add('Open MultiChat folder')
 [void]$menu.Items.Add('-')
 $miExit=$menu.Items.Add('Exit')
 $notify.ContextMenuStrip=$menu
 
+$previousUpdateResult=Join-Path $stateCacheRoot 'update-last-result.json'
+if(Test-Path -LiteralPath $previousUpdateResult){
+    try{
+        $updateResult=Get-Content -LiteralPath $previousUpdateResult -Raw|ConvertFrom-Json
+        if([bool](Get-ChatProp $updateResult 'success' $false)){
+            $notify.ShowBalloonTip(3000,'MultiChat updated',[string](Get-ChatProp $updateResult 'message' 'Update completed.'),'Info')
+        }else{
+            $notify.ShowBalloonTip(4500,'MultiChat update failed',[string](Get-ChatProp $updateResult 'message' 'The previous update could not be completed.'),'Warning')
+        }
+    }catch{}
+    Remove-Item -LiteralPath $previousUpdateResult -Force -ErrorAction SilentlyContinue
+}
+
 $miOpen.Add_Click({$form.Show();$form.WindowState='Normal';$form.Activate()})
 $miHide.Add_Click({$form.Hide()})
 $miFolder.Add_Click({Start-Process explorer.exe -ArgumentList $root})
 $miRestart.Add_Click({Restart-RemoteCommander})
 $miClean.Add_Click({Start-WorktreeCleanup})
+$miCheckUpdate.Add_Click({
+    $script:updateDismissed=$false
+    $script:updateNotified=$false
+    Start-UpdateCheck -Force -Manual
+})
 $cleanupButton.Add_Click({Start-WorktreeCleanup})
-$updateButton.Add_Click({
-    if($script:latestReleaseUrl){
-        Start-Process -FilePath $script:latestReleaseUrl
+$updateButton.Add_Click({Start-SelfUpdate})
+$notesButton.Add_Click({
+    if($script:latestVersion){
+        Show-MultiChatReleaseNotes -Owner $form -Version $script:latestVersion -Notes $script:latestReleaseNotes -ReleaseUrl $script:latestReleaseUrl
     }
 })
 $laterButton.Add_Click({
     $script:updateDismissed=$true
     Update-UpdateUi
+})
+$checkNowButton.Add_Click({
+    $script:updateDismissed=$false
+    $script:updateNotified=$false
+    $versionLabel.Text='Checking for updates...'
+    $versionLabel.ForeColor=$script:UiColors.Muted
+    Start-UpdateCheck -Force -Manual
+})
+$channelCombo.Add_SelectedIndexChanged({
+    if($script:suppressChannelChange){return}
+    $selected=if([string]$channelCombo.SelectedItem -eq 'Beta'){'beta'}else{'stable'}
+    if(Set-ConfigProperty -Name 'updateChannel' -Value $selected){
+        $script:updateDismissed=$false
+        $script:updateNotified=$false
+        $script:latestVersion=''
+        $script:updateAvailable=$false
+        Remove-Item -LiteralPath $script:updateCacheFile -Force -ErrorAction SilentlyContinue
+        Start-UpdateCheck -Force -Manual
+    }
 })
 $notify.Add_DoubleClick({$form.Show();$form.WindowState='Normal';$form.Activate()})
 
