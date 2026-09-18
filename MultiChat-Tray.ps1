@@ -3,132 +3,347 @@ param([switch]$StartHidden)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-$ErrorActionPreference = 'SilentlyContinue'
-$root = $PSScriptRoot
+$ErrorActionPreference='SilentlyContinue'
+$root=$PSScriptRoot
 Import-Module (Join-Path $root 'ChatMulti.psm1') -Force -DisableNameChecking
-$cfg = Get-ChatConfig
+. (Join-Path $root 'MultiChat.UI.ps1')
+$cfg=Get-ChatConfig
 
-$createdNew = $false
-$mutex = New-Object Threading.Mutex($true,'ChatGPTMultiChatAgentV2',[ref]$createdNew)
-if (-not $createdNew) {
-    [Windows.Forms.MessageBox]::Show('ChatGPT MultiChat Agent is already running.','MultiChat') | Out-Null
+$createdNew=$false
+$mutex=New-Object Threading.Mutex($true,'ChatGPTMultiChatAgentV2',[ref]$createdNew)
+if(-not $createdNew){
+    [Windows.Forms.MessageBox]::Show('ChatGPT MultiChat Agent is already running.','MultiChat')|Out-Null
     exit 0
 }
 
-$script:exiting = $false
-$script:lastRemoteRestart = [datetime]::MinValue
-$script:gitCache = @{}
-$script:cleanupCandidates = @()
-$script:lastRemoteCheck = [datetime]::MinValue
-$script:remoteProcesses = @()
-$script:lastCleanupCheck = [datetime]::MinValue
-$script:cachedSafe = 0
-$script:cachedPending = 0
+$script:exiting=$false
+$script:lastRemoteRestart=[datetime]::MinValue
+$script:lastRemoteCheck=[datetime]::MinValue
+$script:lastExpiryCheck=[datetime]::MinValue
+$script:lastHistoryCheck=[datetime]::MinValue
+$script:lastCleanupScanStart=[datetime]::MinValue
+$script:remoteProcesses=@()
+$script:gitCache=@{}
+$script:cleanupCandidates=@()
+$script:cachedSafe=0
+$script:cachedPending=0
+$script:cleanupScanProcess=$null
+$script:cleanupProcess=$null
+$script:cleanupResultFile=$null
+$script:lastHistoryText=''
+
+$stateCacheRoot=Join-Path $root 'state\cache'
+New-Item -ItemType Directory -Path $stateCacheRoot -Force|Out-Null
 
 function Get-RemoteCommanderProcess {
-    @(Get-CimInstance Win32_Process | Where-Object {
+    @(Get-CimInstance Win32_Process|Where-Object{
         $_.CommandLine -match 'desktop-commander' -and $_.CommandLine -match '\bremote\b'
     })
 }
 
 function Start-RemoteCommanderHidden {
-    if (-not (Get-Command npx.cmd -ErrorAction SilentlyContinue)) { return $false }
-    $log = Join-Path $root 'state\logs\desktop-commander.log'
-    $cmd = 'npx.cmd @wonderwhy-er/desktop-commander@latest remote >> "' + $log + '" 2>&1'
-    Start-Process cmd.exe -ArgumentList '/c',$cmd -WindowStyle Hidden | Out-Null
-    $script:lastRemoteRestart = Get-Date
+    if(-not(Get-Command npx.cmd -ErrorAction SilentlyContinue)){return $false}
+    $log=Join-Path $root 'state\logs\desktop-commander.log'
+    $cmd='npx.cmd @wonderwhy-er/desktop-commander@latest remote >> "'+$log+'" 2>&1'
+    Start-Process cmd.exe -ArgumentList '/c',$cmd -WindowStyle Hidden|Out-Null
+    $script:lastRemoteRestart=Get-Date
     return $true
 }
 
 function Restart-RemoteCommander {
-    foreach ($proc in @(Get-RemoteCommanderProcess)) {
+    foreach($proc in @(Get-RemoteCommanderProcess)){
         Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
     }
-    Start-Sleep -Milliseconds 700
-    Start-RemoteCommanderHidden | Out-Null
+    Start-Sleep -Milliseconds 500
+    Start-RemoteCommanderHidden|Out-Null
 }
 
-function Get-SlotColor([int]$slot) {
-    switch ($slot) {
-        1 { [Drawing.Color]::LimeGreen }
-        2 { [Drawing.Color]::Cyan }
-        3 { [Drawing.Color]::Magenta }
-        4 { [Drawing.Color]::Gold }
-        5 { [Drawing.Color]::DodgerBlue }
-        6 { [Drawing.Color]::Tomato }
-        7 { [Drawing.Color]::White }
-        default { [Drawing.Color]::DarkCyan }
-    }
-}
-
-function Format-Age($Session) {
-    try { $since=[DateTimeOffset]::Parse([string]$Session.updatedAt).LocalDateTime }
-    catch { return '--:--' }
-    $span=(Get-Date)-$since
-    if ($span.TotalHours -ge 1) {
-        return ('{0:00}:{1:00}:{2:00}' -f [int][math]::Floor($span.TotalHours),$span.Minutes,$span.Seconds)
-    }
-    return ('{0:00}:{1:00}' -f $span.Minutes,$span.Seconds)
-}
-
-function Get-GitCached($Session) {
-    if (-not $Session.originRepo) { return $null }
-    $id=[string]$Session.id
+function Get-GitCached {
+    param($Session)
+    $originRepo=[string](Get-ChatProp $Session 'originRepo' '')
+    if(-not $originRepo){return $null}
+    $id=[string](Get-ChatProp $Session 'id' '')
     $cached=$script:gitCache[$id]
     $now=Get-Date
-    if ($cached -and (($now-$cached.at).TotalSeconds -lt [int]$cfg.gitRefreshSeconds)) {
-        return $cached.value
-    }
+    $maxAge=[int](Get-ChatProp $cfg 'gitRefreshSeconds' 8)
+    if($cached -and (($now-$cached.at).TotalSeconds -lt $maxAge)){return $cached.value}
     $value=Get-ChatGitSummary $Session
     $script:gitCache[$id]=@{at=$now;value=$value}
     return $value
 }
 
-$form = New-Object Windows.Forms.Form
-$form.Text = 'ChatGPT MultiChat Agent'
-$form.Size = New-Object Drawing.Size(1040,650)
-$form.MinimumSize = New-Object Drawing.Size(820,500)
-$form.StartPosition = 'CenterScreen'
-$form.BackColor = [Drawing.Color]::FromArgb(24,24,24)
-$form.ForeColor = [Drawing.Color]::Gainsboro
+function Start-WorktreeScan {
+    if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){return}
+    $result=Join-Path $stateCacheRoot 'worktree-scan.json'
+    Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
+    $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-ResultFile',$result,'-Quiet')
+    $script:cleanupResultFile=$result
+    $script:cleanupScanProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
+    $script:lastCleanupScanStart=Get-Date
+}
 
-$top = New-Object Windows.Forms.Panel
-$top.Dock='Top'
-$top.Height=62
-$top.Padding=New-Object Windows.Forms.Padding(12,8,12,6)
-$form.Controls.Add($top)
+function Complete-WorktreeScan {
+    if(-not $script:cleanupScanProcess -or -not $script:cleanupScanProcess.HasExited){return $false}
+    if($script:cleanupResultFile -and (Test-Path -LiteralPath $script:cleanupResultFile)){
+        try{
+            $result=Get-Content -LiteralPath $script:cleanupResultFile -Raw|ConvertFrom-Json
+            $script:cleanupCandidates=@($result.items)
+            $script:cachedSafe=[int]$result.safeCount
+            $script:cachedPending=[int]$result.pendingCount
+        }catch{}
+    }
+    $script:cleanupScanProcess.Dispose()
+    $script:cleanupScanProcess=$null
+    return $true
+}
 
-$title = New-Object Windows.Forms.Label
-$title.Text='CHATGPT MULTICHAT'
-$title.Font=New-Object Drawing.Font('Consolas',16,[Drawing.FontStyle]::Bold)
+function Start-WorktreeCleanup {
+    if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){return}
+    $safe=@($script:cleanupCandidates|Where-Object{[bool](Get-ChatProp $_ 'safe' $false)})
+    if(-not $safe.Count){
+        [Windows.Forms.MessageBox]::Show('There are no safe worktrees to clean.','MultiChat')|Out-Null
+        return
+    }
+    $msg="$($safe.Count) clean worktrees with no pending commits will be removed. Continue?"
+    if([Windows.Forms.MessageBox]::Show($msg,'MultiChat','YesNo','Question') -ne 'Yes'){return}
+
+    $candidateFile=Join-Path $stateCacheRoot 'cleanup-input.json'
+    $resultFile=Join-Path $stateCacheRoot 'cleanup-result.json'
+    [IO.File]::WriteAllText($candidateFile,($safe|ConvertTo-Json -Depth 8),(New-Object Text.UTF8Encoding($false)))
+    Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
+
+    $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-Apply','-CandidatesFile',$candidateFile,'-ResultFile',$resultFile,'-Quiet')
+    $script:cleanupResultFile=$resultFile
+    $script:cleanupProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
+    $cleanupButton.Enabled=$false
+    $cleanupButton.Text='Cleaning...'
+    $cleanupHint.Text='Validating and removing safe worktrees in the background.'
+}
+
+function Complete-WorktreeCleanup {
+    if(-not $script:cleanupProcess -or -not $script:cleanupProcess.HasExited){return $false}
+    $removed=0
+    if($script:cleanupResultFile -and (Test-Path -LiteralPath $script:cleanupResultFile)){
+        try{$removed=[int](Get-Content -LiteralPath $script:cleanupResultFile -Raw|ConvertFrom-Json).removedCount}catch{}
+    }
+    $script:cleanupProcess.Dispose()
+    $script:cleanupProcess=$null
+    $cleanupButton.Enabled=$true
+    $cleanupHint.Text=if($removed -eq 1){'1 worktree removed.'}else{"$removed worktrees removed."}
+    Start-WorktreeScan
+    return $true
+}
+
+function Update-SessionRows {
+    param([array]$Sessions)
+    $conflicts=@(Get-ProjectConflictGroups -Sessions $Sessions)
+    $conflictRepos=@{}
+    foreach($group in $conflicts){$conflictRepos[$group.originRepo]=$group.count}
+
+    while($grid.Rows.Count -lt $Sessions.Count){[void]$grid.Rows.Add()}
+    while($grid.Rows.Count -gt $Sessions.Count){$grid.Rows.RemoveAt($grid.Rows.Count-1)}
+
+    $working=0
+    for($i=0;$i -lt $Sessions.Count;$i++){
+        $s=$Sessions[$i]
+        $idle=Get-SessionIdleInfo -Session $s -SkipGit
+        if([string]$s.status -eq 'READY'){
+            $activity=if($idle.abandoned){'ABANDONED'}else{'FREE'}
+            $detail=''
+        }else{
+            $activity='WORKING'
+            $detail=[string]$s.status
+            $working++
+        }
+
+        $git=Get-GitCached $s
+        $gitText=if($git -and $git.text){$git.text}elseif($git -and $git.hasGit){'clean'}else{''}
+        $port=Get-ChatProp $s 'devPort' ''
+        $warning=''
+        $originRepo=[string](Get-ChatProp $s 'originRepo' '')
+        if($originRepo -and $conflictRepos.ContainsKey($originRepo)){$warning="SAME PROJECT x$($conflictRepos[$originRepo])"}
+
+        $row=$grid.Rows[$i]
+        Set-GridCellValue $row 'Chat' "CHAT-$($s.slot)"
+        Set-GridCellValue $row 'Project' $s.project
+        Set-GridCellValue $row 'Activity' $activity
+        Set-GridCellValue $row 'Detail' $detail
+        Set-GridCellValue $row 'Time' (Format-SessionAge $s)
+        Set-GridCellValue $row 'Git' $gitText
+        Set-GridCellValue $row 'Port' $port
+        Set-GridCellValue $row 'Task' $s.task
+        Set-GridCellValue $row 'Warning' $warning
+
+        $slotColor=Get-SlotColor([int]$s.slot)
+        $chatCell=$row.Cells['Chat']
+        $chatCell.Style.BackColor=$slotColor
+        $chatCell.Style.ForeColor=[Drawing.Color]::FromArgb(15,17,21)
+        $chatCell.Style.SelectionBackColor=$slotColor
+        $chatCell.Style.SelectionForeColor=[Drawing.Color]::FromArgb(15,17,21)
+
+        $row.Cells['Activity'].Style.ForeColor=switch($activity){
+            'WORKING'{$script:UiColors.Warn}
+            'ABANDONED'{$script:UiColors.Bad}
+            default{$script:UiColors.Good}
+        }
+        $row.Cells['Warning'].Style.ForeColor=if($warning){$script:UiColors.Warn}else{$script:UiColors.Muted}
+    }
+    $grid.ClearSelection()
+    $grid.CurrentCell=$null
+    return $working
+}
+
+function Update-History {
+    $now=Get-Date
+    $interval=[int](Get-ChatProp $cfg 'historyRefreshSeconds' 5)
+    if(($now-$script:lastHistoryCheck).TotalSeconds -lt $interval){return}
+    $history=@(Get-ChatHistory -Limit 12|Select-Object -Last 12)
+    $lines=@()
+    foreach($h in $history){
+        try{$ended=(Get-Date $h.endedAt -Format 'HH:mm:ss')}catch{$ended='--:--:--'}
+        $lines+=("{0}   CHAT-{1}   {2,-18}   {3,-14}   {4}s   {5}" -f $ended,$h.slot,$h.project,$h.reason,$h.durationSeconds,$h.task)
+    }
+    $text=$lines -join [Environment]::NewLine
+    if($text -ne $script:lastHistoryText){$historyBox.Text=$text;$script:lastHistoryText=$text}
+    $script:lastHistoryCheck=$now
+}
+
+function Refresh-Dashboard {
+    $now=Get-Date
+    $expiryInterval=[int](Get-ChatProp $cfg 'expiryRefreshSeconds' 10)
+    if(($now-$script:lastExpiryCheck).TotalSeconds -ge $expiryInterval){
+        Expire-IdleManagedChatSessions|Out-Null
+        $script:lastExpiryCheck=$now
+    }
+
+    $sessions=@(Get-ManagedChatSessions|Where-Object active|Sort-Object slot)
+    $processInterval=[int](Get-ChatProp $cfg 'processRefreshSeconds' 5)
+    if(($now-$script:lastRemoteCheck).TotalSeconds -ge $processInterval){
+        $script:remoteProcesses=@(Get-RemoteCommanderProcess)
+        $script:lastRemoteCheck=$now
+    }
+    $remote=@($script:remoteProcesses)
+    if(-not $remote.Count -and ($now-$script:lastRemoteRestart).TotalSeconds -ge 10){Start-RemoteCommanderHidden|Out-Null}
+
+    [void](Complete-WorktreeScan)
+    [void](Complete-WorktreeCleanup)
+    $cleanupInterval=[int](Get-ChatProp $cfg 'cleanupRefreshSeconds' 20)
+    if(-not $script:cleanupScanProcess -and -not $script:cleanupProcess -and (($now-$script:lastCleanupScanStart).TotalSeconds -ge $cleanupInterval)){Start-WorktreeScan}
+
+    $working=Update-SessionRows -Sessions $sessions
+    $dc=if($remote.Count){'ONLINE'}else{'RECONNECTING'}
+
+    Set-MetricCard $dcCard $dc $(if($remote.Count){'Good'}else{'Warn'})
+    Set-MetricCard $chatCard "$($sessions.Count)/$($cfg.maxSlots)" 'Neutral'
+    Set-MetricCard $workCard "$working" $(if($working){'Warn'}else{'Good'})
+    Set-MetricCard $treeCard "$($script:cachedSafe) safe / $($script:cachedPending) pending" $(if($script:cachedPending){'Warn'}else{'Good'})
+
+    if(-not $script:cleanupProcess){
+        $cleanupButton.Text=if($script:cachedSafe -gt 0){"Clean safe worktrees ($($script:cachedSafe))"}else{'Clean safe worktrees'}
+        $cleanupHint.Text=if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){
+            'Scanning worktrees in the background...'
+        }elseif($script:cachedSafe -gt 0){
+            "$($script:cachedSafe) safe worktree(s) can be removed."
+        }elseif($script:cachedPending -gt 0){
+            'No safe cleanup available; pending worktrees need attention.'
+        }else{
+            'No finished worktrees waiting for cleanup.'
+        }
+    }
+
+    $connectionLabel.Text="Desktop Commander  $dc"
+    $connectionLabel.ForeColor=if($remote.Count){$script:UiColors.Good}else{$script:UiColors.Warn}
+    $notify.Text=("MultiChat: {0} chats | {1} working" -f $sessions.Count,$working)
+    Update-History
+}
+
+$form=New-Object Windows.Forms.Form
+$form.Text='ChatGPT MultiChat'
+$form.Size=New-Object Drawing.Size(1120,700)
+$form.MinimumSize=New-Object Drawing.Size(900,560)
+$form.StartPosition='CenterScreen'
+$form.BackColor=$script:UiColors.Bg
+$form.ForeColor=$script:UiColors.Text
+$form.Font=New-Object Drawing.Font('Segoe UI',9)
+$form.Padding=New-Object Windows.Forms.Padding(18)
+Enable-ControlDoubleBuffer $form
+
+$header=New-Object Windows.Forms.Panel
+$header.Dock='Top'
+$header.Height=72
+$header.BackColor=$script:UiColors.Bg
+$form.Controls.Add($header)
+
+$title=New-Object Windows.Forms.Label
+$title.Text='ChatGPT MultiChat'
+$title.Font=New-Object Drawing.Font('Segoe UI Semibold',20)
+$title.ForeColor=$script:UiColors.Text
 $title.AutoSize=$true
-$title.ForeColor=[Drawing.Color]::Cyan
-$title.Location=New-Object Drawing.Point(12,7)
-$top.Controls.Add($title)
+$title.Location=New-Object Drawing.Point(0,0)
+$header.Controls.Add($title)
 
-$statusLabel = New-Object Windows.Forms.Label
-$statusLabel.AutoSize=$true
-$statusLabel.Font=New-Object Drawing.Font('Consolas',10)
-$statusLabel.Location=New-Object Drawing.Point(14,37)
-$top.Controls.Add($statusLabel)
+$subtitle=New-Object Windows.Forms.Label
+$subtitle.Text='Parallel Desktop Commander sessions, without collisions.'
+$subtitle.Font=New-Object Drawing.Font('Segoe UI',9)
+$subtitle.ForeColor=$script:UiColors.Muted
+$subtitle.AutoSize=$true
+$subtitle.Location=New-Object Drawing.Point(2,39)
+$header.Controls.Add($subtitle)
 
-$cleanupButton = New-Object Windows.Forms.Button
-$cleanupButton.Text='Clean safe worktrees'
-$cleanupButton.Width=190
-$cleanupButton.Height=30
-$cleanupButton.Anchor='Top,Right'
-$cleanupButton.Location=New-Object Drawing.Point(824,16)
-$top.Controls.Add($cleanupButton)
+$connectionLabel=New-Object Windows.Forms.Label
+$connectionLabel.AutoSize=$true
+$connectionLabel.Font=New-Object Drawing.Font('Segoe UI Semibold',9)
+$connectionLabel.Anchor='Top,Right'
+$connectionLabel.Location=New-Object Drawing.Point(840,12)
+$header.Controls.Add($connectionLabel)
 
-$split = New-Object Windows.Forms.SplitContainer
+$metrics=New-Object Windows.Forms.FlowLayoutPanel
+$metrics.Dock='Top'
+$metrics.Height=70
+$metrics.WrapContents=$false
+$metrics.FlowDirection='LeftToRight'
+$metrics.BackColor=$script:UiColors.Bg
+$metrics.Padding=New-Object Windows.Forms.Padding(0,4,0,8)
+$form.Controls.Add($metrics)
+$metrics.BringToFront()
+
+$dcCard=New-MetricCard -Title 'DESKTOP COMMANDER' -Width 220
+$chatCard=New-MetricCard -Title 'ACTIVE CHATS' -Width 190
+$workCard=New-MetricCard -Title 'WORKING NOW' -Width 190
+$treeCard=New-MetricCard -Title 'WORKTREES' -Width 280
+$metrics.Controls.AddRange(@($dcCard,$chatCard,$workCard,$treeCard))
+
+$actionPanel=New-Object Windows.Forms.Panel
+$actionPanel.Dock='Bottom'
+$actionPanel.Height=58
+$actionPanel.BackColor=$script:UiColors.Surface
+$actionPanel.Padding=New-Object Windows.Forms.Padding(12,10,12,10)
+$form.Controls.Add($actionPanel)
+
+$cleanupButton=New-FlatButton -Text 'Clean safe worktrees' -Width 205 -Accent
+$cleanupButton.Dock='Right'
+$actionPanel.Controls.Add($cleanupButton)
+
+$cleanupHint=New-Object Windows.Forms.Label
+$cleanupHint.Text='Worktree checks run in the background.'
+$cleanupHint.AutoSize=$true
+$cleanupHint.ForeColor=$script:UiColors.Muted
+$cleanupHint.Font=New-Object Drawing.Font('Segoe UI',9)
+$cleanupHint.Location=New-Object Drawing.Point(12,19)
+$actionPanel.Controls.Add($cleanupHint)
+
+$split=New-Object Windows.Forms.SplitContainer
 $split.Dock='Fill'
 $split.Orientation='Horizontal'
-$split.SplitterDistance=365
-$split.BackColor=$form.BackColor
+$split.SplitterDistance=360
+$split.SplitterWidth=8
+$split.BackColor=$script:UiColors.Bg
+$split.Panel1.BackColor=$script:UiColors.Surface
+$split.Panel2.BackColor=$script:UiColors.Surface
 $form.Controls.Add($split)
 $split.BringToFront()
 
-$grid = New-Object Windows.Forms.DataGridView
+$grid=New-Object Windows.Forms.DataGridView
 $grid.Dock='Fill'
 $grid.ReadOnly=$true
 $grid.AllowUserToAddRows=$false
@@ -136,55 +351,68 @@ $grid.AllowUserToDeleteRows=$false
 $grid.AllowUserToResizeRows=$false
 $grid.RowHeadersVisible=$false
 $grid.AutoSizeColumnsMode='Fill'
-$grid.BackgroundColor=$form.BackColor
+$grid.BackgroundColor=$script:UiColors.Surface
 $grid.BorderStyle='None'
+$grid.CellBorderStyle='SingleHorizontal'
+$grid.GridColor=$script:UiColors.Border
 $grid.EnableHeadersVisualStyles=$false
-$grid.ColumnHeadersDefaultCellStyle.BackColor=[Drawing.Color]::FromArgb(40,40,40)
-$grid.ColumnHeadersDefaultCellStyle.ForeColor=[Drawing.Color]::White
-$grid.DefaultCellStyle.BackColor=$form.BackColor
-$grid.DefaultCellStyle.ForeColor=[Drawing.Color]::Gainsboro
-$grid.DefaultCellStyle.SelectionBackColor=[Drawing.Color]::FromArgb(55,55,55)
-$grid.DefaultCellStyle.SelectionForeColor=[Drawing.Color]::White
-$grid.Font=New-Object Drawing.Font('Consolas',9)
+$grid.ColumnHeadersHeight=36
+$grid.ColumnHeadersHeightSizeMode='DisableResizing'
+$grid.ColumnHeadersDefaultCellStyle.BackColor=$script:UiColors.Surface2
+$grid.ColumnHeadersDefaultCellStyle.ForeColor=$script:UiColors.Muted
+$grid.ColumnHeadersDefaultCellStyle.Font=New-Object Drawing.Font('Segoe UI Semibold',8.5)
+$grid.DefaultCellStyle.BackColor=$script:UiColors.Surface
+$grid.DefaultCellStyle.ForeColor=$script:UiColors.Text
+$grid.DefaultCellStyle.SelectionBackColor=$script:UiColors.Surface3
+$grid.DefaultCellStyle.SelectionForeColor=$script:UiColors.Text
+$grid.DefaultCellStyle.Padding=New-Object Windows.Forms.Padding(5,2,5,2)
+$grid.DefaultCellStyle.Font=New-Object Drawing.Font('Segoe UI',8.5)
+$grid.RowTemplate.Height=34
 $grid.TabStop=$false
-try { $db=$grid.GetType().GetProperty('DoubleBuffered',([Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic)); if($db){$db.SetValue($grid,$true,$null)} } catch {}
+Enable-ControlDoubleBuffer $grid
 $split.Panel1.Controls.Add($grid)
 
-foreach ($col in @(
-    @('Chat','Chat',62),@('Project','Project',140),@('Activity','Activity',105),
-    @('Detail','Detail',80),@('Time','Time',62),@('Git','Git',95),
-    @('Port','Port',58),@('Task','Task',190),@('Warning','Warning',155)
-)) {
-    $c=New-Object Windows.Forms.DataGridViewTextBoxColumn
-    $c.Name=$col[0]
-    $c.HeaderText=$col[1]
-    $c.FillWeight=[int]$col[2]
-    [void]$grid.Columns.Add($c)
+foreach($col in @(
+    @('Chat','CHAT',58),@('Project','PROJECT',130),@('Activity','STATUS',90),
+    @('Detail','DETAIL',75),@('Time','AGE',60),@('Git','GIT',85),
+    @('Port','PORT',52),@('Task','TASK',180),@('Warning','WARNING',130)
+)){
+    $column=New-Object Windows.Forms.DataGridViewTextBoxColumn
+    $column.Name=$col[0]
+    $column.HeaderText=$col[1]
+    $column.FillWeight=[int]$col[2]
+    [void]$grid.Columns.Add($column)
 }
 
+$historyHeader=New-Object Windows.Forms.Panel
+$historyHeader.Dock='Top'
+$historyHeader.Height=38
+$historyHeader.BackColor=$script:UiColors.Surface2
+$split.Panel2.Controls.Add($historyHeader)
+
 $historyTitle=New-Object Windows.Forms.Label
-$historyTitle.Text='Recent history'
-$historyTitle.Dock='Top'
-$historyTitle.Height=25
-$historyTitle.Padding=New-Object Windows.Forms.Padding(8,4,0,0)
-$historyTitle.ForeColor=[Drawing.Color]::DarkGray
-$split.Panel2.Controls.Add($historyTitle)
+$historyTitle.Text='Recent activity'
+$historyTitle.AutoSize=$true
+$historyTitle.Font=New-Object Drawing.Font('Segoe UI Semibold',9.5)
+$historyTitle.ForeColor=$script:UiColors.Text
+$historyTitle.Location=New-Object Drawing.Point(12,10)
+$historyHeader.Controls.Add($historyTitle)
 
 $historyBox=New-Object Windows.Forms.TextBox
 $historyBox.Dock='Fill'
 $historyBox.Multiline=$true
 $historyBox.ReadOnly=$true
 $historyBox.ScrollBars='Vertical'
-$historyBox.BackColor=$form.BackColor
-$historyBox.ForeColor=[Drawing.Color]::Silver
+$historyBox.BackColor=$script:UiColors.Surface
+$historyBox.ForeColor=$script:UiColors.Muted
 $historyBox.BorderStyle='None'
-$historyBox.Font=New-Object Drawing.Font('Consolas',9)
+$historyBox.Font=New-Object Drawing.Font('Consolas',8.5)
 $split.Panel2.Controls.Add($historyBox)
 $historyBox.BringToFront()
 
-$notify = New-Object Windows.Forms.NotifyIcon
+$notify=New-Object Windows.Forms.NotifyIcon
 $notify.Icon=[Drawing.SystemIcons]::Application
-$notify.Text='ChatGPT MultiChat Agent'
+$notify.Text='ChatGPT MultiChat'
 $notify.Visible=$true
 
 $menu=New-Object Windows.Forms.ContextMenuStrip
@@ -202,26 +430,13 @@ $miOpen.Add_Click({$form.Show();$form.WindowState='Normal';$form.Activate()})
 $miHide.Add_Click({$form.Hide()})
 $miFolder.Add_Click({Start-Process explorer.exe -ArgumentList $root})
 $miRestart.Add_Click({Restart-RemoteCommander})
+$miClean.Add_Click({Start-WorktreeCleanup})
+$cleanupButton.Add_Click({Start-WorktreeCleanup})
 $notify.Add_DoubleClick({$form.Show();$form.WindowState='Normal';$form.Activate()})
-
-function Invoke-CleanupFromUi {
-    $safe=@($script:cleanupCandidates | Where-Object safe)
-    if (-not $safe.Count) {
-        [Windows.Forms.MessageBox]::Show('There are no safe worktrees to clean.','MultiChat') | Out-Null
-        return
-    }
-    $msg="$($safe.Count) clean worktrees with no pending commits will be removed. Continue?"
-    if ([Windows.Forms.MessageBox]::Show($msg,'MultiChat','YesNo','Question') -eq 'Yes') {
-        $removed=@(Invoke-SafeWorktreeCleanup)
-        [Windows.Forms.MessageBox]::Show("Removed: $($removed.Count)",'MultiChat') | Out-Null
-    }
-}
-$cleanupButton.Add_Click({Invoke-CleanupFromUi})
-$miClean.Add_Click({Invoke-CleanupFromUi})
 
 $form.Add_FormClosing({
     param($sender,$e)
-    if (-not $script:exiting) {
+    if(-not $script:exiting){
         $e.Cancel=$true
         $form.Hide()
         $notify.ShowBalloonTip(1000,'MultiChat','Still running in the system tray.','Info')
@@ -230,109 +445,24 @@ $form.Add_FormClosing({
 
 $miExit.Add_Click({
     $script:exiting=$true
+    if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){$script:cleanupScanProcess.Kill()}
     $notify.Visible=$false
     $form.Close()
     [Windows.Forms.Application]::Exit()
 })
 
-function Refresh-Dashboard {
-    Expire-IdleManagedChatSessions | Out-Null
-    $now=Get-Date
-    $sessions=@(Get-ManagedChatSessions | Where-Object active | Sort-Object slot)
-    if (($now-$script:lastRemoteCheck).TotalSeconds -ge 5) {
-        $script:remoteProcesses=@(Get-RemoteCommanderProcess)
-        $script:lastRemoteCheck=$now
-    }
-    $remote=@($script:remoteProcesses)
-
-    if (-not $remote.Count -and ((Get-Date)-$script:lastRemoteRestart).TotalSeconds -ge 10) {
-        Start-RemoteCommanderHidden | Out-Null
-    }
-
-    $conflicts=@(Get-ProjectConflictGroups -Sessions $sessions)
-    $conflictRepos=@{}
-    foreach ($g in $conflicts) { $conflictRepos[$g.originRepo]=$g.count }
-
-    while ($grid.Rows.Count -lt $sessions.Count) { [void]$grid.Rows.Add() }
-    while ($grid.Rows.Count -gt $sessions.Count) { $grid.Rows.RemoveAt($grid.Rows.Count-1) }
-    $rowIndex=0
-    foreach ($s in $sessions) {
-        $idle=Get-SessionIdleInfo $s
-        if ($s.status -eq 'READY') {
-            $activity=if($idle.abandoned){'ABANDONED'}else{'FREE'}
-            $detail=''
-        } else {
-            $activity='WORKING'
-            $detail=[string]$s.status
-        }
-
-        $git=Get-GitCached $s
-        $gitText=if($git -and $git.text){$git.text}elseif($git -and $git.hasGit){'clean'}else{''}
-        $port=Get-ChatProp $s 'devPort' ''
-        $warning=''
-        if ($s.originRepo -and $conflictRepos.ContainsKey([string]$s.originRepo)) {
-            $warning="SAME PROJECT x$($conflictRepos[[string]$s.originRepo])"
-        }
-
-        $row=$rowIndex; $rowIndex++; $grid.Rows[$row].SetValues(
-            "CHAT-$($s.slot)",$s.project,$activity,$detail,(Format-Age $s),
-            $gitText,$port,$s.task,$warning
-        )
-        $grid.Rows[$row].Cells['Chat'].Style.BackColor=Get-SlotColor ([int]$s.slot)
-        $grid.Rows[$row].Cells['Chat'].Style.ForeColor=[Drawing.Color]::Black
-        $grid.Rows[$row].Cells['Chat'].Style.SelectionBackColor=Get-SlotColor ([int]$s.slot)
-        $grid.Rows[$row].Cells['Chat'].Style.SelectionForeColor=[Drawing.Color]::Black
-        if ($activity -eq 'WORKING') {
-            $grid.Rows[$row].Cells['Activity'].Style.ForeColor=[Drawing.Color]::Gold
-        } elseif ($activity -eq 'ABANDONED') {
-            $grid.Rows[$row].Cells['Activity'].Style.ForeColor=[Drawing.Color]::OrangeRed
-        } else {
-            $grid.Rows[$row].Cells['Activity'].Style.ForeColor=[Drawing.Color]::LimeGreen
-        }
-        $grid.Rows[$row].Cells['Warning'].Style.ForeColor=[Drawing.Color]::Gainsboro
-        if ($warning) {
-            $grid.Rows[$row].Cells['Warning'].Style.ForeColor=[Drawing.Color]::Orange
-        }
-    }
-
-    $grid.ClearSelection()
-    $grid.CurrentCell=$null
-
-    if (($now-$script:lastCleanupCheck).TotalSeconds -ge 5) {
-        $script:cleanupCandidates=@(Get-WorktreeCleanupCandidates)
-        $script:cachedSafe=@($script:cleanupCandidates | Where-Object safe).Count
-        $script:cachedPending=@($script:cleanupCandidates | Where-Object { -not $_.safe }).Count
-        $script:lastCleanupCheck=$now
-    }
-    $safe=$script:cachedSafe
-    $pending=$script:cachedPending
-
-
-    $dc=if($remote.Count){'ONLINE'}else{'RECONNECTING'}
-    $statusLabel.Text="Desktop Commander: $dc   |   Chats: $($sessions.Count)/$($cfg.maxSlots)   |   Worktrees: $safe safe, $pending pending"
-    $statusLabel.ForeColor=if($remote.Count){[Drawing.Color]::LimeGreen}else{[Drawing.Color]::OrangeRed}
-
-    $history=@(Get-ChatHistory -Limit 12 | Select-Object -Last 12)
-    $lines=@()
-    foreach ($h in $history) {
-        try { $ended=(Get-Date $h.endedAt -Format 'HH:mm:ss') } catch { $ended='--:--:--' }
-        $lines += ("{0}  CHAT-{1}  {2,-18}  {3,-14}  {4}s  {5}" -f $ended,$h.slot,$h.project,$h.reason,$h.durationSeconds,$h.task)
-    }
-    $historyBox.Text=($lines -join [Environment]::NewLine)
-
-    $notify.Text=("MultiChat: {0} chats | DC {1}" -f $sessions.Count,$dc)
-}
-
 $timer=New-Object Windows.Forms.Timer
-$timer.Interval=[Math]::Max(500,([int]$cfg.refreshSeconds*1000))
+$timer.Interval=[Math]::Max(750,([int]$cfg.refreshSeconds*1000))
 $timer.Add_Tick({Refresh-Dashboard})
-$form.Add_ResizeBegin({ $timer.Stop() })
-$form.Add_ResizeEnd({ Refresh-Dashboard; $timer.Start() })
-$timer.Start()
+$form.Add_ResizeBegin({$timer.Stop()})
+$form.Add_ResizeEnd({Refresh-Dashboard;$timer.Start()})
 
+Start-WorktreeScan
 Refresh-Dashboard
-if (-not $StartHidden) { $form.Show() }
+$timer.Start()
+if(-not $StartHidden){$form.Show()}
 [Windows.Forms.Application]::Run()
+
 $notify.Visible=$false
 $mutex.ReleaseMutex()
 $mutex.Dispose()

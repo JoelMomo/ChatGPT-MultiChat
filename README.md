@@ -4,7 +4,7 @@ A portable Windows coordination layer for running **multiple ChatGPT chats throu
 
 ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Current version: **v2.0.1**
+> Current version: **v2.1.0**
 
 ## Why it exists
 
@@ -41,13 +41,24 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Automatic development-port reservation.
 - Configurable locks for shared resources.
 - Activity classification such as `READY`, `BUILD`, `TEST`, `GIT`, `ADB`, `SERVER`, and `WAIT`.
-- Lightweight WinForms tray dashboard.
+- Redesigned WinForms tray dashboard with a cleaner dark UI, metric cards, and improved table readability.
 - Short history of completed sessions.
-- Safe cleanup detection for finished worktrees.
+- Background safe-cleanup detection for finished worktrees.
 - Recovery of abandoned sessions and dead owner processes.
 - Automatic hidden restart of Desktop Commander when it is no longer available.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+
+## What's new in v2.1.0
+
+- Refreshed dashboard using Segoe UI, flatter controls, status cards, and clearer visual hierarchy.
+- Worktree scanning and cleanup run in hidden worker processes instead of blocking the UI thread.
+- Cleanup uses cached candidates and revalidates only worktrees that are about to be removed.
+- Git, history, Desktop Commander, expiry, and cleanup checks now run at independent cadences.
+- Grid cells are updated only when their displayed value changes.
+- Expensive Git checks are avoided during ordinary one-second status refreshes.
+- Session/project registry handling is more defensive against malformed stale entries.
+- UI helpers and runtime/performance logic are split into dedicated modules for easier maintenance.
 
 ## Requirements
 
@@ -122,7 +133,17 @@ Closing the dashboard window does **not** stop the agent. It remains in the Wind
 
 ### Dashboard performance
 
-The active-chat view refreshes frequently, but heavier process/Git/worktree checks are cached and run less often. Dashboard refresh is paused while the window is being moved or resized so dragging stays responsive.
+The visible chat state still refreshes quickly, but expensive work is decoupled from that timer:
+
+- Git summaries are cached and refreshed less often than chat state.
+- session-expiry checks run independently from the visual refresh;
+- Desktop Commander process detection runs on its own interval;
+- recent history is refreshed separately;
+- worktree scanning runs in a hidden PowerShell worker;
+- worktree cleanup also runs in a hidden worker;
+- refresh pauses while the window is moved or resized.
+
+This keeps the WinForms UI responsive even when Git operations take around a second on a larger set of worktrees.
 
 ## Session states and expiry
 
@@ -145,9 +166,11 @@ A finished worktree is considered safe to remove only when it has no uncommitted
 
 You can use:
 
-- **Clean safe worktrees** in the dashboard;
+- **Clean safe worktrees** in the dashboard. The button returns immediately while cleanup runs in the background;
 - `Cleanup-Worktrees.ps1` to inspect candidates;
 - `Cleanup-Worktrees.ps1 -Apply` to apply safe cleanup.
+
+The dashboard scans for cleanup candidates periodically in the background. When cleanup is requested, the cached safe candidates are passed to the worker and revalidated immediately before deletion.
 
 ## Shared-resource locks
 
@@ -182,7 +205,11 @@ The main settings live in `config.json`:
 | `dirtyExpireMinutes` | 20 | Expiry for idle sessions with local changes |
 | `portRangeStart` | 3000 | First reservable development port |
 | `portRangeCount` | 100 | Number of ports in the reservation pool |
-| `gitRefreshSeconds` | 5 | Git-summary refresh interval |
+| `gitRefreshSeconds` | 10 | Git-summary refresh interval |
+| `remoteCheckSeconds` | 10 | Desktop Commander process-check interval |
+| `cleanupScanSeconds` | 30 | Background worktree-scan interval |
+| `historyRefreshSeconds` | 5 | Recent-history refresh interval |
+| `expiryCheckSeconds` | 10 | Idle-session expiry-check interval |
 | `historyLimit` | 50 | Maximum stored history entries |
 
 Resource-lock rules are also defined in `config.json`.
@@ -191,9 +218,12 @@ Resource-lock rules are also defined in `config.json`.
 
 | File | Purpose |
 |---|---|
-| `ChatMulti.psm1` | Session-management core |
+| `ChatMulti.psm1` | Session-management core and module loader |
+| `ChatMulti.Advanced.ps1` | Ports, history, project resolution, conflicts, and reservations |
+| `ChatMulti.Performance.ps1` | Git/status, cleanup, idle-state, and robust project-registry logic |
+| `MultiChat-Tray.ps1` | Dashboard orchestration and system-tray agent |
+| `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
 | `Start-McpChatSession.ps1` | Starts and owns one persistent managed chat session |
-| `MultiChat-Tray.ps1` | Dashboard and system-tray agent |
 | `Setup.cmd` / `Setup.ps1` | Local setup and desktop shortcut |
 | `config.json` | Portable configuration |
 | `PROMPT-FOR-CHATGPT.txt` | Ready-to-paste ChatGPT instruction |
@@ -214,7 +244,7 @@ Expected result:
 
 ```text
 SELF-TEST: OK
-Git, Node/npx, scripts, configuration, slots, colors and ports: OK.
+Dependencies, scripts, configuration, slots, colors and ports: OK.
 ```
 
 The test checks dependencies, PowerShell syntax, configuration, slot behavior, fixed colors, and port reservation.
@@ -228,7 +258,7 @@ The project uses paths relative to its own folder.
 To build a package:
 
 ```powershell
-.\Make-Portable-Package.ps1 -Version "2.0.1"
+.\Make-Portable-Package.ps1 -Version "2.1.0"
 ```
 
 ## Limitations
