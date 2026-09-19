@@ -58,6 +58,29 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
 
+## Screenshots
+
+### Dashboard
+
+![ChatGPT MultiChat dashboard](assets/screenshots/dashboard-overview.png)
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshots/chat-capacity-menu.png" alt="Chat-capacity preset selector" />
+    </td>
+    <td width="50%">
+      <img src="assets/screenshots/update-available.png" alt="Signed update available in MultiChat" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Live chat-capacity presets</strong></td>
+    <td align="center"><strong>Signed update workflow</strong></td>
+  </tr>
+</table>
+
+The screenshots above were captured from the portable build in an isolated Windows Sandbox environment using demo-only sessions and no personal workspace data.
+
 ## What's new in v2.4.0
 
 - Added a dashboard chat-capacity selector: **CHATS [−] N [+]**.
