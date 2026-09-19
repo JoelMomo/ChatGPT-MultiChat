@@ -13,6 +13,7 @@ foreach($required in @(
     'MultiChat-Tray.ps1','MultiChat.UI.ps1','MultiChat-Maintenance.ps1',
     'Cleanup-Worktrees.ps1','Validate-ManagedSession.ps1','Invoke-ManagedExternal.ps1','HardeningTest.ps1','CapacityTest.ps1',
     'Emergency-Stop-DesktopCommander.ps1','Harden-DesktopCommander.ps1','SecurityTest.ps1','SecretScan.ps1',
+    'PortabilityTest.ps1','RestrictedRemoteTest.ps1','RestrictedRemote.psm1','RestrictedRemote-Launcher.ps1','RestrictedRemote-Child.ps1','RestrictedRemote-Revoke.ps1','Install-RestrictedRemote.ps1','Activate-RestrictedRemote.ps1','Uninstall-RestrictedRemote.ps1','Import-RestrictedRemoteChanges.ps1',
     'Check-Updates.ps1','Update-MultiChat.ps1','Sign-ReleasePackage.ps1','Test-ReleaseSignature.ps1','Publish-Release.ps1',
     'RELEASE-PUBLIC-KEY.xml','config.json','PROMPT-FOR-CHATGPT.txt'
 )){
@@ -352,6 +353,16 @@ try{
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'SecretScan.ps1')
     if($LASTEXITCODE -ne 0){
         $errors+="SecretScan.ps1 failed with exit code $LASTEXITCODE"
+    }
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'PortabilityTest.ps1')
+    if($LASTEXITCODE -ne 0){
+        $errors+="PortabilityTest.ps1 failed with exit code $LASTEXITCODE"
+    }
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'RestrictedRemoteTest.ps1')
+    if($LASTEXITCODE -ne 0){
+        $errors+="RestrictedRemoteTest.ps1 failed with exit code $LASTEXITCODE"
     }
 
     Stop-ManagedChatSession

@@ -9,6 +9,7 @@ Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference='SilentlyContinue'
 $root=$PSScriptRoot
 Import-Module (Join-Path $root 'ChatMulti.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $root 'RestrictedRemote.psm1') -Force -DisableNameChecking
 . (Join-Path $root 'MultiChat.UI.ps1')
 $cfg=Get-ChatConfig
 
@@ -45,6 +46,7 @@ $script:dcOnline=$false
 $script:dcChecked=$false
 $script:dcDesiredOnline=$false
 $script:dcConnecting=$false
+$script:restrictedRemoteLauncherPid=0
 $script:suppressConnectionToggle=$false
 $script:lastActiveChatAt=Get-Date
 $script:remoteIdleNoticeShown=$false
@@ -77,7 +79,9 @@ $stateCacheRoot=Join-Path $root 'state\cache'
 New-Item -ItemType Directory -Path $stateCacheRoot -Force|Out-Null
 $script:updateCacheFile=Join-Path $stateCacheRoot 'update-cache.json'
 $script:desktopCommanderPackage='@wonderwhy-er/desktop-commander@0.2.51'
-$script:remoteCommanderKillSwitch=Join-Path $stateCacheRoot 'desktop-commander.disabled'
+$remoteSecurityRoot=Get-RestrictedRemoteSecurityRoot
+New-Item -ItemType Directory -Path $remoteSecurityRoot -Force|Out-Null
+$script:remoteCommanderKillSwitch=Join-Path $remoteSecurityRoot 'desktop-commander.disabled'
 if(Test-Path -LiteralPath $script:remoteCommanderKillSwitch){
     $script:dcDesiredOnline=$false
     $script:dcConnecting=$false
@@ -127,6 +131,7 @@ function Get-RemoteCommanderAllowedDirectories {
 }
 
 function Sync-RemoteCommanderAllowedDirectories {
+    if(Test-RestrictedRemoteEnabled){return}
     $configPath=Join-Path $env:USERPROFILE '.claude-server-commander\config.json'
     if(-not(Test-Path -LiteralPath $configPath)){return}
     try{
@@ -140,8 +145,53 @@ function Sync-RemoteCommanderAllowedDirectories {
     }catch{}
 }
 
+function Get-ProcessTreeIds {
+    param([Parameter(Mandatory)][int]$RootPid)
+    $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Select-Object ProcessId,ParentProcessId)
+    $ids=New-Object Collections.Generic.List[int]
+    [void]$ids.Add($RootPid)
+    for($pass=0;$pass -lt 8;$pass++){
+        $added=$false
+        foreach($proc in $all){
+            if($ids.Contains([int]$proc.ParentProcessId) -and -not $ids.Contains([int]$proc.ProcessId)){
+                [void]$ids.Add([int]$proc.ProcessId)
+                $added=$true
+            }
+        }
+        if(-not $added){break}
+    }
+    return @($ids)
+}
+
+function Get-RestrictedRemoteLauncherProcess {
+    if(-not(Test-RestrictedRemoteEnabled)){return $null}
+    $status=Get-RestrictedRemoteStatus
+    $pidValue=if($status){[int]$status.launcherPid}else{[int]$script:restrictedRemoteLauncherPid}
+    if($pidValue -le 0){return $null}
+    return Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+}
+
+function Test-RemoteCommanderProcessPresent {
+    if(Test-RestrictedRemoteEnabled){
+        return [bool](Get-RestrictedRemoteLauncherProcess)
+    }
+    return @(Get-RemoteCommanderProcess).Count -gt 0
+}
+
 function Test-RemoteCommanderReady {
     try{
+        if(Test-RestrictedRemoteEnabled){
+            $status=Get-RestrictedRemoteStatus
+            if(-not $status -or [string]$status.state -ne 'RUNNING'){return $false}
+            $launcherPid=[int]$status.launcherPid
+            if($launcherPid -le 0 -or -not(Get-Process -Id $launcherPid -ErrorAction SilentlyContinue)){return $false}
+            $pids=@(Get-ProcessTreeIds -RootPid $launcherPid)
+            return @(
+                Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                Where-Object { $_.OwningProcess -in $pids -and $_.RemotePort -eq 443 }
+            ).Count -gt 0
+        }
+
         $processes=@(Get-RemoteCommanderProcess)
         if($processes.Count -eq 0){return $false}
 
@@ -172,6 +222,15 @@ function Get-RemoteCommanderProcess {
 
 function Start-RemoteCommanderHidden {
     Sync-RemoteCommanderAllowedDirectories
+    if(Get-Command Test-RestrictedRemoteMisconfigured -ErrorAction SilentlyContinue){
+        if(Test-RestrictedRemoteMisconfigured){
+            $script:dcOnline=$false
+            $script:dcChecked=$true
+            $script:dcConnecting=$false
+            try{$notify.ShowBalloonTip(5000,'Restricted Remote needs repair','MultiChat was moved after Restricted Remote was installed. Re-run the local Restricted Remote installer before enabling remote access.','Warning')}catch{}
+            return $false
+        }
+    }
     if(Test-RemoteCommanderEmergencyStop){
         $script:dcDesiredOnline=$false
         $script:dcOnline=$false
@@ -179,6 +238,34 @@ function Start-RemoteCommanderHidden {
         $script:dcConnecting=$false
         return $false
     }
+    if(Test-RestrictedRemoteEnabled){
+        $launcherScript=Join-Path $root 'RestrictedRemote-Launcher.ps1'
+        if(-not(Test-Path -LiteralPath $launcherScript)){
+            $script:dcConnecting=$false
+            return $false
+        }
+        try{
+            $launcher=Start-Process powershell.exe -ArgumentList @(
+                '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
+                '-File',$launcherScript,
+                '-ParentPid',$PID
+            ) -WindowStyle Hidden -PassThru
+            $script:restrictedRemoteLauncherPid=$launcher.Id
+            $launcher.Dispose()
+        }catch{
+            $script:dcConnecting=$false
+            return $false
+        }
+        $log=Join-Path $root 'state\logs\desktop-commander.log'
+        try{Add-Content -LiteralPath $log -Value ((Get-Date).ToString('o')+' START restricted-user') -Encoding UTF8}catch{}
+        $script:lastRemoteRestart=Get-Date
+        $script:dcChecked=$false
+        $script:dcOnline=$false
+        $script:dcConnecting=$true
+        $script:lastMaintenanceStart=[datetime]::MinValue
+        return $true
+    }
+
     if(-not(Get-Command npx.cmd -ErrorAction SilentlyContinue)){
         $script:dcConnecting=$false
         return $false
@@ -210,6 +297,14 @@ function Clear-RemoteCommanderSensitiveHistory {
 }
 
 function Stop-RemoteCommander {
+    if(Test-RestrictedRemoteEnabled){
+        $launcher=Get-RestrictedRemoteLauncherProcess
+        if($launcher){
+            Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 600
+        }
+        $script:restrictedRemoteLauncherPid=0
+    }
     foreach($proc in @(Get-RemoteCommanderProcess)){
         Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
     }
@@ -242,8 +337,7 @@ function Set-DesktopCommanderEnabled {
     }
 
     if($ForceRestart){Stop-RemoteCommander}
-    $existing=@(Get-RemoteCommanderProcess)
-    if($existing.Count -gt 0){
+    if(Test-RemoteCommanderProcessPresent){
         $script:dcOnline=Test-RemoteCommanderReady
         $script:dcChecked=$true
         $script:dcConnecting=(-not $script:dcOnline)
@@ -268,13 +362,13 @@ function Test-WorkstationLocked {
 function Apply-RemoteExposurePolicy {
     param([Parameter(Mandatory)][array]$Sessions)
 
-    if(-not $script:dcDesiredOnline -and @(Get-RemoteCommanderProcess).Count -gt 0){
+    if(-not $script:dcDesiredOnline -and (Test-RemoteCommanderProcessPresent)){
         Stop-RemoteCommander
         return
     }
 
     if([bool](Get-ChatProp $cfg 'remoteDisconnectOnLock' $true) -and (Test-WorkstationLocked)){
-        if($script:dcDesiredOnline -or @(Get-RemoteCommanderProcess).Count -gt 0){
+        if($script:dcDesiredOnline -or (Test-RemoteCommanderProcessPresent)){
             $script:remoteLockedOff=$true
             Set-DesktopCommanderEnabled -Enabled $false
         }
@@ -355,9 +449,40 @@ function Get-ChatCapacity {
     return $value
 }
 
+function Get-DashboardManagedSessions {
+    if(Test-RestrictedRemoteEnabled){
+        $restricted=Get-RestrictedRemoteConfig
+        $sessionRoot=if($restricted){Join-Path ([string]$restricted.stateRoot) 'sessions'}else{''}
+        if(-not $sessionRoot -or -not(Test-Path -LiteralPath $sessionRoot)){return @()}
+        $items=@()
+        foreach($file in @(Get-ChildItem -LiteralPath $sessionRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)){
+            $session=Read-ChatJson $file.FullName
+            if($session -and [bool](Get-ChatProp $session 'active' $false)){
+                $items+=$session
+            }
+        }
+        return @($items)
+    }
+    return @(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck)
+}
+
+function Get-DashboardHistory {
+    param([int]$Limit=18)
+    if(Test-RestrictedRemoteEnabled){
+        $restricted=Get-RestrictedRemoteConfig
+        $historyPath=if($restricted){Join-Path ([string]$restricted.stateRoot) 'history.jsonl'}else{''}
+        if(-not $historyPath -or -not(Test-Path -LiteralPath $historyPath)){return @()}
+        return @(
+            Get-Content -LiteralPath $historyPath -Tail $Limit -ErrorAction SilentlyContinue |
+            ForEach-Object { try{$_|ConvertFrom-Json}catch{} }
+        )
+    }
+    return @(Get-ChatHistory -Limit $Limit)
+}
+
 function Get-HighestActiveSlot {
     $highest=0
-    foreach($session in @(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck)){
+    foreach($session in @(Get-DashboardManagedSessions)){
         $slot=[int](Get-ChatProp $session 'slot' 0)
         if($slot -gt $highest){$highest=$slot}
     }
@@ -557,6 +682,10 @@ function Start-MaintenanceWorker {
         '-File',(Join-Path $root 'MultiChat-Maintenance.ps1'),
         '-ResultFile',$result
     )
+    if(Test-RestrictedRemoteEnabled){
+        $restricted=Get-RestrictedRemoteConfig
+        $args+=@('-StateRoot',[string]$restricted.stateRoot,'-WorkspaceRoot',[string]$restricted.workspaceRoot)
+    }
     $script:maintenanceResultFile=$result
     $script:maintenanceProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
     $script:lastMaintenanceStart=Get-Date
@@ -600,6 +729,10 @@ function Start-WorktreeScan {
     $result=Join-Path $stateCacheRoot 'worktree-scan.json'
     Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
     $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-ResultFile',$result,'-Quiet')
+    if(Test-RestrictedRemoteEnabled){
+        $restricted=Get-RestrictedRemoteConfig
+        $args+=@('-StateRoot',[string]$restricted.stateRoot,'-WorkspaceRoot',[string]$restricted.workspaceRoot)
+    }
     if([bool](Get-ChatProp $cfg 'autoCleanSafeWorktrees' $true)){$args+='-AutoCleanSafe'}
     $script:cleanupScanResultFile=$result
     $script:cleanupScanProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
@@ -640,6 +773,10 @@ function Start-WorktreeCleanup {
     Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
 
     $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'Cleanup-Worktrees.ps1'),'-Apply','-CandidatesFile',$candidateFile,'-ResultFile',$resultFile,'-Quiet')
+    if(Test-RestrictedRemoteEnabled){
+        $restricted=Get-RestrictedRemoteConfig
+        $args+=@('-StateRoot',[string]$restricted.stateRoot,'-WorkspaceRoot',[string]$restricted.workspaceRoot)
+    }
     $script:cleanupApplyResultFile=$resultFile
     $script:cleanupProcess=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
 
@@ -814,7 +951,7 @@ function Update-History {
     $now=Get-Date
     $interval=[int](Get-ChatProp $cfg 'historyRefreshSeconds' 5)
     if(($now-$script:lastHistoryCheck).TotalSeconds -lt $interval){return}
-    $history=@(Get-ChatHistory -Limit 12|Select-Object -Last 12)
+    $history=@(Get-DashboardHistory -Limit 12|Select-Object -Last 12)
     $lines=@()
     foreach($h in $history){
         try{$ended=(Get-Date $h.endedAt -Format 'HH:mm:ss')}catch{$ended='--:--:--'}
@@ -841,7 +978,7 @@ function Refresh-Dashboard {
         Start-MaintenanceWorker
     }
 
-    $sessions=@(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck|Sort-Object slot)
+    $sessions=@(Get-DashboardManagedSessions|Sort-Object slot)
     Apply-RemoteExposurePolicy -Sessions $sessions
     if($script:dcDesiredOnline -and $script:dcChecked -and -not $script:dcOnline -and (($now-$script:lastRemoteRestart).TotalSeconds -ge 10)){
         [void](Start-RemoteCommanderHidden)

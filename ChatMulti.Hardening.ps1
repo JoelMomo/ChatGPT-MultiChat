@@ -27,6 +27,16 @@ function Test-ChatPathEqual {
     return [string]::Equals($a,$b,[StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-ChatPathWithin {
+    param([string]$Path,[string]$Root)
+    $child=ConvertTo-ChatCanonicalPath $Path
+    $parent=ConvertTo-ChatCanonicalPath $Root
+    if (-not $child -or -not $parent) { return $false }
+    if ([string]::Equals($child,$parent,[StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $prefix=$parent+[IO.Path]::DirectorySeparatorChar
+    return $child.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)
+}
+
 function Invoke-ChatGitCapture {
     param(
         [Parameter(Mandatory)][string]$Repo,
@@ -113,6 +123,10 @@ function Get-ManagedWorktreeIdentity {
     $workspace=[string](Get-ChatProp $Session 'workspace' '')
     $originRepo=[string](Get-ChatProp $Session 'originRepo' '')
     $branch=[string](Get-ChatProp $Session 'branch' '')
+    $workspaceKind=[string](Get-ChatProp $Session 'workspaceKind' '')
+    if (-not $workspaceKind) {
+        $workspaceKind=if([bool](Get-ChatProp $Session 'isolated' $false)){'worktree'}else{'direct'}
+    }
     if (-not $workspace -or -not $originRepo -or -not (Test-Path -LiteralPath $workspace) -or -not (Test-Path -LiteralPath $originRepo)) {
         return [pscustomobject]@{Valid=$false;Reason='WORKSPACE_MISSING';Head='';Branch=''}
     }
@@ -120,6 +134,32 @@ function Get-ManagedWorktreeIdentity {
     $top=Invoke-ChatGitCapture -Repo $workspace -Arguments @('rev-parse','--show-toplevel')
     if ($top.ExitCode -ne 0 -or -not $top.First -or -not (Test-ChatPathEqual $workspace ([string]$top.First))) {
         return [pscustomobject]@{Valid=$false;Reason='WORKSPACE_MISMATCH';Head='';Branch=''}
+    }
+
+    if ($workspaceKind -eq 'clone') {
+        if (-not (Test-ChatPathWithin -Path $workspace -Root $script:WorkspaceRoot)) {
+            return [pscustomobject]@{Valid=$false;Reason='WORKSPACE_OUTSIDE_ROOT';Head='';Branch=''}
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $workspace '.git') -PathType Container)) {
+            return [pscustomobject]@{Valid=$false;Reason='FOREIGN_CLONE_STATE';Head='';Branch=''}
+        }
+
+        $remote=Invoke-ChatGitCapture -Repo $workspace -Arguments @('config','--get','remote.origin.url')
+        if ($remote.ExitCode -ne 0 -or -not $remote.First -or -not (Test-ChatPathEqual ([string]$remote.First) $originRepo)) {
+            return [pscustomobject]@{Valid=$false;Reason='FOREIGN_CLONE_ORIGIN';Head='';Branch=''}
+        }
+        $head=Invoke-ChatGitCapture -Repo $workspace -Arguments @('rev-parse','HEAD^{commit}')
+        $branchNow=Invoke-ChatGitCapture -Repo $workspace -Arguments @('branch','--show-current')
+        $headText=if($head.First){([string]$head.First).Trim()}else{''}
+        $branchText=if($branchNow.First){([string]$branchNow.First).Trim()}else{''}
+        if ($head.ExitCode -ne 0 -or -not $headText -or ($branch -and $branchText -ne $branch)) {
+            return [pscustomobject]@{Valid=$false;Reason='FOREIGN_CLONE_STATE';Head=$headText;Branch=$branchText}
+        }
+        return [pscustomobject]@{Valid=$true;Reason='OK';Head=$headText;Branch=$branchText}
+    }
+
+    if ($workspaceKind -ne 'worktree') {
+        return [pscustomobject]@{Valid=$false;Reason='WORKSPACE_NOT_ISOLATED';Head='';Branch=''}
     }
 
     $listing=Invoke-ChatGitCapture -Repo $originRepo -Arguments @('worktree','list','--porcelain')
@@ -558,6 +598,7 @@ function Get-HardenedWorktreeCleanupCandidateState {
             workspace=[string](Get-ChatProp $Session 'workspace' '')
             originRepo=[string](Get-ChatProp $Session 'originRepo' '')
             branch=[string](Get-ChatProp $Session 'branch' '')
+            workspaceKind=[string](Get-ChatProp $Session 'workspaceKind' '')
             baseRef=[string](Get-ChatProp $Session 'baseRef' '')
             baseSha=[string](Get-ChatProp $Session 'baseSha' '')
             canonicalRef=[string](Get-ChatProp $Session 'canonicalRef' '')
@@ -577,6 +618,7 @@ function Get-HardenedWorktreeCleanupCandidateState {
             workspace=[string](Get-ChatProp $Session 'workspace' '')
             originRepo=[string](Get-ChatProp $Session 'originRepo' '')
             branch=[string](Get-ChatProp $Session 'branch' '')
+            workspaceKind=[string](Get-ChatProp $Session 'workspaceKind' '')
             baseRef=[string](Get-ChatProp $Session 'baseRef' '')
             baseSha=[string](Get-ChatProp $Session 'baseSha' '')
             canonicalRef=[string](Get-ChatProp $Session 'canonicalRef' '')
@@ -600,6 +642,7 @@ function Get-HardenedWorktreeCleanupCandidateState {
             workspace=[string](Get-ChatProp $Session 'workspace' '')
             originRepo=[string](Get-ChatProp $Session 'originRepo' '')
             branch=[string](Get-ChatProp $Session 'branch' '')
+            workspaceKind=[string](Get-ChatProp $Session 'workspaceKind' '')
             baseRef=[string](Get-ChatProp $Session 'baseRef' '')
             baseSha=[string](Get-ChatProp $Session 'baseSha' '')
             canonicalRef=[string](Get-ChatProp $Session 'canonicalRef' '')
@@ -618,6 +661,7 @@ function Get-HardenedWorktreeCleanupCandidateState {
         workspace=[string](Get-ChatProp $Session 'workspace' '')
         originRepo=[string](Get-ChatProp $Session 'originRepo' '')
         branch=[string](Get-ChatProp $Session 'branch' '')
+        workspaceKind=[string](Get-ChatProp $Session 'workspaceKind' '')
         baseRef=[string](Get-ChatProp $Session 'baseRef' '')
         baseSha=[string](Get-ChatProp $Session 'baseSha' '')
         canonicalRef=[string](Get-ChatProp $Session 'canonicalRef' '')

@@ -17,8 +17,17 @@ $emergencyPath=Join-Path $root 'Emergency-Stop-DesktopCommander.ps1'
 $hardeningPath=Join-Path $root 'Harden-DesktopCommander.ps1'
 $gitIgnorePath=Join-Path $root '.gitignore'
 $promptPath=Join-Path $root 'PROMPT-FOR-CHATGPT.txt'
+$restrictedInstallerPath=Join-Path $root 'Install-RestrictedRemote.ps1'
+$restrictedLauncherPath=Join-Path $root 'RestrictedRemote-Launcher.ps1'
+$restrictedChildPath=Join-Path $root 'RestrictedRemote-Child.ps1'
+$restrictedRevokePath=Join-Path $root 'RestrictedRemote-Revoke.ps1'
+$restrictedImportPath=Join-Path $root 'Import-RestrictedRemoteChanges.ps1'
+$chatModulePath=Join-Path $root 'ChatMulti.psm1'
 
-foreach($required in @($trayPath,$maintenancePath,$emergencyPath,$hardeningPath,$gitIgnorePath,$promptPath)){
+foreach($required in @(
+    $trayPath,$maintenancePath,$emergencyPath,$hardeningPath,$gitIgnorePath,$promptPath,
+    $restrictedInstallerPath,$restrictedLauncherPath,$restrictedChildPath,$restrictedRevokePath,$restrictedImportPath,$chatModulePath
+)){
     if(-not(Test-Path -LiteralPath $required)){
         Add-Failure ("Missing security component: "+$required)
     }
@@ -56,7 +65,7 @@ if(Test-Path -LiteralPath $trayPath){
     if(-not $tray.Contains('$connectionToggle=New-ToggleSwitch -Checked $script:dcDesiredOnline')){
         Add-Failure 'Desktop Commander toggle does not follow the secure startup state'
     }
-    if($tray -notmatch 'if\(-not \$script:dcDesiredOnline -and @\(Get-RemoteCommanderProcess\)\.Count -gt 0\)'){
+    if($tray -notmatch 'if\(-not \$script:dcDesiredOnline -and \(Test-RemoteCommanderProcessPresent\)\)'){
         Add-Failure 'Remote processes are not forced off when the local switch is Off'
     }
     if($tray -notmatch 'Clear-RemoteCommanderSensitiveHistory'){
@@ -83,6 +92,12 @@ if(Test-Path -LiteralPath $emergencyPath){
     }
     if($emergency -notmatch 'emergency-stop-last-result\.json'){
         Add-Failure 'Emergency stop does not record a safe revocation result'
+    }
+    if($emergency -notmatch 'RestrictedRemote-Revoke\.ps1' -or $emergency -notmatch 'Get-RestrictedRemoteCredential'){
+        Add-Failure 'Emergency stop cannot revoke Restricted Remote authorization'
+    }
+    if($emergency -notmatch "ChatGPT-MultiChat\\security"){
+        Add-Failure 'Emergency kill switch is not stored in the protected per-user security directory'
     }
 }
 
@@ -115,6 +130,50 @@ if(Test-Path -LiteralPath $maintenancePath){
     }
     if($maintenance -notmatch 'Get-NetTCPConnection'){
         Add-Failure 'Maintenance does not validate active network connectivity'
+    }
+}
+
+if(Test-Path -LiteralPath $restrictedInstallerPath){
+    $installer=[IO.File]::ReadAllText($restrictedInstallerPath)
+    if($installer -match '(?s)gitDir.*\(OI\)\(CI\)M'){
+        Add-Failure 'Restricted Remote grants write access to canonical Git metadata'
+    }
+    if($installer -notmatch 'shared clones'){
+        Add-Failure 'Restricted Remote does not declare shared-clone Git isolation'
+    }
+    if($installer -notmatch 'Protect-OwnerOnlyDirectory -Path \$normalStateRoot' -or
+       $installer -notmatch 'Protect-OwnerOnlyDirectory -Path \$normalWorkspaceRoot'){
+        Add-Failure 'Restricted Remote does not protect normal state/workspaces from the lower-privilege worker'
+    }
+    if($installer -notmatch 'restrictedStateRoot' -or $installer -notmatch 'restrictedWorkspaceRoot'){
+        Add-Failure 'Restricted Remote does not use dedicated state/workspace trees'
+    }
+}
+if(Test-Path -LiteralPath $restrictedLauncherPath){
+    $launcher=[IO.File]::ReadAllText($restrictedLauncherPath)
+    if($launcher -notmatch '-UseNewEnvironment'){
+        Add-Failure 'Restricted Remote can inherit interactive-user environment variables'
+    }
+}
+if(Test-Path -LiteralPath $restrictedChildPath){
+    $child=[IO.File]::ReadAllText($restrictedChildPath)
+    if($child -notmatch "MULTICHAT_RESTRICTED_REMOTE='1'"){
+        Add-Failure 'Restricted Remote child does not force restricted session isolation'
+    }
+    if($child -notmatch 'MULTICHAT_STATE_ROOT' -or $child -notmatch 'MULTICHAT_WORKSPACE_ROOT'){
+        Add-Failure 'Restricted Remote child does not isolate state and workspaces'
+    }
+}
+if(Test-Path -LiteralPath $chatModulePath){
+    $chatModule=[IO.File]::ReadAllText($chatModulePath)
+    if($chatModule -notmatch 'git clone --shared --no-checkout'){
+        Add-Failure 'Restricted sessions do not use isolated shared clones'
+    }
+    if($chatModule -notmatch "workspaceKind='clone'"){
+        Add-Failure 'Restricted clone workspace type is not recorded'
+    }
+    if($chatModule -notmatch 'MULTICHAT_STATE_ROOT' -or $chatModule -notmatch 'MULTICHAT_WORKSPACE_ROOT'){
+        Add-Failure 'MultiChat does not honor isolated state/workspace roots'
     }
 }
 

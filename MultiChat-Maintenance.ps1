@@ -1,9 +1,17 @@
 param(
-    [Parameter(Mandatory)][string]$ResultFile
+    [Parameter(Mandatory)][string]$ResultFile,
+    [string]$StateRoot,
+    [string]$WorkspaceRoot
 )
 
 $ErrorActionPreference='SilentlyContinue'
+if($StateRoot){$env:MULTICHAT_STATE_ROOT=[IO.Path]::GetFullPath($StateRoot)}
+if($WorkspaceRoot){$env:MULTICHAT_WORKSPACE_ROOT=[IO.Path]::GetFullPath($WorkspaceRoot)}
 Import-Module (Join-Path $PSScriptRoot 'ChatMulti.psm1') -Force -DisableNameChecking
+$restrictedModule=Join-Path $PSScriptRoot 'RestrictedRemote.psm1'
+if(Test-Path -LiteralPath $restrictedModule){
+    Import-Module $restrictedModule -Force -DisableNameChecking
+}
 
 $started=Get-Date
 $expired=@(Expire-IdleManagedChatSessions)
@@ -11,34 +19,63 @@ $sessions=@(Get-ManagedChatSessions -ActiveOnly)
 
 $dcOnline=$false
 try{
-    $remoteProcesses=@(
-        Get-CimInstance Win32_Process |
-        Where-Object {
-            $_.CommandLine -match 'desktop-commander' -and
-            $_.CommandLine -match '\bremote\b'
-        }
-    )
-    $deviceFile=Join-Path $env:USERPROFILE '.desktop-commander-device\device.json'
-    $authenticated=$false
-    if($remoteProcesses.Count -gt 0 -and (Test-Path -LiteralPath $deviceFile)){
-        $device=Get-Content -LiteralPath $deviceFile -Raw|ConvertFrom-Json
-        $authenticated=[bool]$device.deviceId -and
-            [bool]$device.session.access_token -and
-            [bool]$device.session.refresh_token
+    $restricted=$null
+    if(Get-Command Get-RestrictedRemoteConfig -ErrorAction SilentlyContinue){
+        $restricted=Get-RestrictedRemoteConfig
     }
 
-    $connected=$false
-    if($authenticated){
-        $remotePids=@($remoteProcesses|Select-Object -ExpandProperty ProcessId)
-        $connected=@(
-            Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.OwningProcess -in $remotePids -and
-                $_.RemotePort -eq 443
+    if($restricted){
+        $status=Get-RestrictedRemoteStatus
+        $launcherPid=if($status){[int]$status.launcherPid}else{0}
+        if($status -and [string]$status.state -eq 'RUNNING' -and $launcherPid -gt 0 -and (Get-Process -Id $launcherPid -ErrorAction SilentlyContinue)){
+            $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Select-Object ProcessId,ParentProcessId)
+            $tree=New-Object Collections.Generic.List[int]
+            [void]$tree.Add($launcherPid)
+            for($pass=0;$pass -lt 8;$pass++){
+                $added=$false
+                foreach($proc in $all){
+                    if($tree.Contains([int]$proc.ParentProcessId) -and -not $tree.Contains([int]$proc.ProcessId)){
+                        [void]$tree.Add([int]$proc.ProcessId)
+                        $added=$true
+                    }
+                }
+                if(-not $added){break}
             }
-        ).Count -gt 0
+            $dcOnline=@(
+                Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                Where-Object { $_.OwningProcess -in @($tree) -and $_.RemotePort -eq 443 }
+            ).Count -gt 0
+        }
+    }else{
+        $remoteProcesses=@(
+            Get-CimInstance Win32_Process |
+            Where-Object {
+                $_.CommandLine -match 'desktop-commander' -and
+                $_.CommandLine -match '\bremote\b'
+            }
+        )
+        $deviceFile=Join-Path $env:USERPROFILE '.desktop-commander-device\device.json'
+        $authenticated=$false
+        if($remoteProcesses.Count -gt 0 -and (Test-Path -LiteralPath $deviceFile)){
+            $device=Get-Content -LiteralPath $deviceFile -Raw|ConvertFrom-Json
+            $authenticated=[bool]$device.deviceId -and
+                [bool]$device.session.access_token -and
+                [bool]$device.session.refresh_token
+        }
+
+        $connected=$false
+        if($authenticated){
+            $remotePids=@($remoteProcesses|Select-Object -ExpandProperty ProcessId)
+            $connected=@(
+                Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.OwningProcess -in $remotePids -and
+                    $_.RemotePort -eq 443
+                }
+            ).Count -gt 0
+        }
+        $dcOnline=$authenticated -and $connected
     }
-    $dcOnline=$authenticated -and $connected
 }catch{}
 
 $git=@()

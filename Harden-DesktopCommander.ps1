@@ -50,6 +50,8 @@ function Protect-PrivateDirectory {
 $remoteDir=Join-Path $env:USERPROFILE '.desktop-commander-device'
 $configDir=Join-Path $env:USERPROFILE '.claude-server-commander'
 $configPath=Join-Path $configDir 'config.json'
+$securityDir=Join-Path $env:LOCALAPPDATA 'ChatGPT-MultiChat\security'
+New-Item -ItemType Directory -Path $securityDir -Force|Out-Null
 
 if(Test-Path -LiteralPath $configPath){
     $cfg=Get-Content -LiteralPath $configPath -Raw|ConvertFrom-Json
@@ -75,6 +77,7 @@ if($PurgeHistory){
 
 Protect-PrivateDirectory -Path $remoteDir
 Protect-PrivateDirectory -Path $configDir
+Protect-PrivateDirectory -Path $securityDir
 
 Write-Host 'Desktop Commander local hardening applied.' -ForegroundColor Green
 if(Test-Path -LiteralPath $remoteDir){Write-Host ('Protected: '+$remoteDir)}

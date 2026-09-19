@@ -3,10 +3,14 @@ param(
     [switch]$AutoCleanSafe,
     [string]$CandidatesFile,
     [string]$ResultFile,
+    [string]$StateRoot,
+    [string]$WorkspaceRoot,
     [switch]$Quiet
 )
 
 $ErrorActionPreference='Stop'
+if($StateRoot){$env:MULTICHAT_STATE_ROOT=[IO.Path]::GetFullPath($StateRoot)}
+if($WorkspaceRoot){$env:MULTICHAT_WORKSPACE_ROOT=[IO.Path]::GetFullPath($WorkspaceRoot)}
 Import-Module (Join-Path $PSScriptRoot 'ChatMulti.psm1') -Force -DisableNameChecking
 
 function Write-ResultFile {

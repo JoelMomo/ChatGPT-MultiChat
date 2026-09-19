@@ -138,7 +138,8 @@ function Release-ChatPort {
 }
 
 function Get-RegisteredChatProjects {
-    $path = Join-Path $script:StateRoot 'projects.json'
+    $registryName=if([string]$env:MULTICHAT_RESTRICTED_REMOTE -eq '1'){'restricted-projects.json'}else{'projects.json'}
+    $path = Join-Path $script:StateRoot $registryName
     if (-not (Test-Path -LiteralPath $path)) {
         return @()
     }
@@ -184,6 +185,22 @@ function Register-ChatProject {
     }
 
     $root = $root.Trim()
+
+    if([string]$env:MULTICHAT_RESTRICTED_REMOTE -eq '1'){
+        $approved=@(Get-RegisteredChatProjects|Where-Object{
+            $candidate=[string](Get-ChatProp $_ 'path' '')
+            $candidate -and [string]::Equals(
+                [IO.Path]::GetFullPath($candidate).TrimEnd('\'),
+                [IO.Path]::GetFullPath($root).TrimEnd('\'),
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        })
+        if($approved.Count -eq 0){
+            throw 'Restricted Remote can only use project roots approved during local setup.'
+        }
+        return
+    }
+
     $name = Split-Path $root -Leaf
     $items = @(
         Get-RegisteredChatProjects |
@@ -377,8 +394,19 @@ function Get-ChatGitSummary {
     $behind = 0
     $branch = [string](Get-ChatProp $Session 'branch' '')
     $originRepo = [string](Get-ChatProp $Session 'originRepo' '')
+    $workspaceKind = [string](Get-ChatProp $Session 'workspaceKind' '')
 
-    if ($branch -and $originRepo -and (Test-Path -LiteralPath $originRepo)) {
+    if ($workspaceKind -eq 'clone') {
+        $baseSha=[string](Get-ChatProp $Session 'baseSha' '')
+        if ($baseSha -match '^[0-9a-fA-F]{40}$') {
+            try {
+                $countOutput=@(& git -C $workspace rev-list --count "$baseSha..HEAD" 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $countOutput) {
+                    $ahead=[int]([string]($countOutput|Select-Object -First 1)).Trim()
+                }
+            } catch {}
+        }
+    } elseif ($branch -and $originRepo -and (Test-Path -LiteralPath $originRepo)) {
         try {
             $countOutput = @(& git -C $originRepo rev-list --left-right --count "$branch...HEAD" 2>$null)
             $countExitCode = $LASTEXITCODE
@@ -494,6 +522,27 @@ function Invoke-SafeWorktreeCleanup {
         $workspace = [string](Get-ChatProp $candidate 'workspace' '')
         $originRepo = [string](Get-ChatProp $candidate 'originRepo' '')
         if (-not $workspace -or -not $originRepo) { continue }
+
+        $workspaceKind=[string](Get-ChatProp $candidate 'workspaceKind' '')
+        if (-not $workspaceKind) {$workspaceKind='worktree'}
+
+        if ($workspaceKind -eq 'clone') {
+            # Clone cleanup never trusts an arbitrary session path. The target
+            # must still validate as a managed clone and stay under WorkspaceRoot.
+            $identity=Get-ManagedWorktreeIdentity -Session $candidate
+            if (-not $identity.Valid -or -not (Test-ChatPathWithin -Path $workspace -Root $script:WorkspaceRoot)) {
+                continue
+            }
+            try {
+                Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction Stop
+            } catch {
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $workspace)) {
+                $removed += $candidate
+            }
+            continue
+        }
 
         $oldErrorActionPreference = $ErrorActionPreference
         $removeExitCode = 1

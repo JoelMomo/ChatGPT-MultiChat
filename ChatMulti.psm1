@@ -1,11 +1,19 @@
 Set-StrictMode -Version Latest
 
 $script:ManagerRoot = $PSScriptRoot
-$script:StateRoot = Join-Path $script:ManagerRoot 'state'
+$script:StateRoot = if($env:MULTICHAT_STATE_ROOT){
+    [IO.Path]::GetFullPath([string]$env:MULTICHAT_STATE_ROOT)
+}else{
+    Join-Path $script:ManagerRoot 'state'
+}
 $script:SessionRoot = Join-Path $script:StateRoot 'sessions'
 $script:LockRoot = Join-Path $script:StateRoot 'locks'
 $script:SlotRoot = Join-Path $script:StateRoot 'slots'
-$script:WorkspaceRoot = Join-Path $script:ManagerRoot 'workspaces'
+$script:WorkspaceRoot = if($env:MULTICHAT_WORKSPACE_ROOT){
+    [IO.Path]::GetFullPath([string]$env:MULTICHAT_WORKSPACE_ROOT)
+}else{
+    Join-Path $script:ManagerRoot 'workspaces'
+}
 $script:AutoResourceLocks = @()
 
 function Initialize-ChatMulti {
@@ -455,6 +463,9 @@ function New-ManagedChatSession {
     $baseInfo=$null
     $canonicalShaAtStart=''
     $createdWorktree=$false
+    $createdClone=$false
+    $workspaceKind='direct'
+    $restrictedIsolation=([string]$env:MULTICHAT_RESTRICTED_REMOTE -eq '1')
 
     try {
         if (-not $ProjectPath) {
@@ -489,22 +500,44 @@ function New-ManagedChatSession {
                     $workspace=Join-Path (Join-Path $script:WorkspaceRoot $project) $id
                     New-Item -ItemType Directory -Path (Split-Path $workspace -Parent) -Force | Out-Null
 
-                    & git -C $repoRoot worktree add -b $branch $workspace $baseInfo.BaseSha | Out-Null
-                    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $workspace '.git'))) {
-                        throw 'Could not create the isolated Git worktree from the requested base.'
+                    if ($restrictedIsolation) {
+                        # Restricted Remote must never need write access to the canonical
+                        # repository's .git directory. A shared clone keeps new objects and
+                        # refs inside the session workspace while borrowing canonical objects
+                        # read-only through Git alternates.
+                        & git clone --shared --no-checkout --quiet -- $repoRoot $workspace
+                        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $workspace '.git') -PathType Container)) {
+                            throw 'Could not create the restricted isolated Git clone.'
+                        }
+                        & git -C $workspace checkout -q -b $branch $baseInfo.BaseSha
+                        if ($LASTEXITCODE -ne 0) {
+                            throw 'Could not create the restricted session branch from the requested base.'
+                        }
+                        $createdClone=$true
+                        $workspaceKind='clone'
+                        $isolated=$true
+                    } else {
+                        & git -C $repoRoot worktree add -b $branch $workspace $baseInfo.BaseSha | Out-Null
+                        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $workspace '.git'))) {
+                            throw 'Could not create the isolated Git worktree from the requested base.'
+                        }
+                        $createdWorktree=$true
+                        $workspaceKind='worktree'
+                        $isolated=$true
                     }
-                    $createdWorktree=$true
-                    $isolated=$true
 
                     $headCheck=Invoke-ChatGitCapture -Repo $workspace -Arguments @('rev-parse','HEAD^{commit}')
                     if ($headCheck.ExitCode -ne 0 -or -not $headCheck.First) {
-                        throw 'Could not verify the new worktree HEAD.'
+                        throw 'Could not verify the isolated workspace HEAD.'
                     }
                     $createdHead=([string]$headCheck.First).Trim().ToLowerInvariant()
                     if ($createdHead -ne $baseInfo.BaseSha) {
-                        throw "Worktree base mismatch: created at $createdHead, expected $($baseInfo.BaseSha)."
+                        throw "Isolated workspace base mismatch: created at $createdHead, expected $($baseInfo.BaseSha)."
                     }
                 } else {
+                    if ($restrictedIsolation) {
+                        throw 'NoWorktree is not available in Restricted Remote mode; use an isolated clone.'
+                    }
                     $branchOutput=@(& git -C $workspace branch --show-current 2>$null)
                     if ($LASTEXITCODE -eq 0) {$branch=($branchOutput | Select-Object -First 1)}
                     if ($baseInfo.ExactRequested) {
@@ -539,7 +572,7 @@ function New-ManagedChatSession {
         $state=[ordered]@{
             schemaVersion=2
             id=$id;slot=$slot;emoji=$emoji;color=$color;project=$project;task=$Task
-            workspace=$workspace;originRepo=$originRepo;branch=$branch;isolated=$isolated
+            workspace=$workspace;originRepo=$originRepo;branch=$branch;isolated=$isolated;workspaceKind=$workspaceKind
             baseRef=if($baseInfo){[string]$baseInfo.BaseRef}else{''}
             baseSha=if($baseInfo){[string]$baseInfo.BaseSha}else{''}
             exactBaseRequested=if($baseInfo){[bool]$baseInfo.ExactRequested}else{$false}
@@ -557,7 +590,10 @@ function New-ManagedChatSession {
         if ($createdWorktree -and $originRepo -and $workspace) {
             try { & git -C $originRepo worktree remove --force $workspace 2>$null | Out-Null } catch {}
         }
-        if ($branch -and $originRepo) {
+        if ($createdClone -and $workspace -and (Test-Path -LiteralPath $workspace)) {
+            try { Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        if ($createdWorktree -and $branch -and $originRepo) {
             try { & git -C $originRepo branch -D $branch 2>$null | Out-Null } catch {}
         }
         if ($devPort) {Release-ChatPort -SessionId $id}
