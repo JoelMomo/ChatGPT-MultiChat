@@ -11,13 +11,34 @@ $sessions=@(Get-ManagedChatSessions -ActiveOnly)
 
 $dcOnline=$false
 try{
-    $dcOnline=@(
+    $remoteProcesses=@(
         Get-CimInstance Win32_Process |
         Where-Object {
             $_.CommandLine -match 'desktop-commander' -and
             $_.CommandLine -match '\bremote\b'
         }
-    ).Count -gt 0
+    )
+    $deviceFile=Join-Path $env:USERPROFILE '.desktop-commander-device\device.json'
+    $authenticated=$false
+    if($remoteProcesses.Count -gt 0 -and (Test-Path -LiteralPath $deviceFile)){
+        $device=Get-Content -LiteralPath $deviceFile -Raw|ConvertFrom-Json
+        $authenticated=[bool]$device.deviceId -and
+            [bool]$device.session.access_token -and
+            [bool]$device.session.refresh_token
+    }
+
+    $connected=$false
+    if($authenticated){
+        $remotePids=@($remoteProcesses|Select-Object -ExpandProperty ProcessId)
+        $connected=@(
+            Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.OwningProcess -in $remotePids -and
+                $_.RemotePort -eq 443
+            }
+        ).Count -gt 0
+    }
+    $dcOnline=$authenticated -and $connected
 }catch{}
 
 $git=@()

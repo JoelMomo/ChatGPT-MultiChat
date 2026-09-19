@@ -58,6 +58,41 @@ $script:currentVersion=if(Test-Path (Join-Path $root 'VERSION')){(Get-Content (J
 $stateCacheRoot=Join-Path $root 'state\cache'
 New-Item -ItemType Directory -Path $stateCacheRoot -Force|Out-Null
 $script:updateCacheFile=Join-Path $stateCacheRoot 'update-cache.json'
+$script:desktopCommanderPackage='@wonderwhy-er/desktop-commander@0.2.51'
+$script:remoteCommanderKillSwitch=Join-Path $stateCacheRoot 'desktop-commander.disabled'
+if(Test-Path -LiteralPath $script:remoteCommanderKillSwitch){
+    $script:dcDesiredOnline=$false
+    $script:dcConnecting=$false
+    $script:dcChecked=$true
+}
+
+function Test-RemoteCommanderEmergencyStop {
+    Test-Path -LiteralPath $script:remoteCommanderKillSwitch
+}
+
+function Test-RemoteCommanderReady {
+    try{
+        $processes=@(Get-RemoteCommanderProcess)
+        if($processes.Count -eq 0){return $false}
+
+        $deviceFile=Join-Path $env:USERPROFILE '.desktop-commander-device\device.json'
+        if(-not(Test-Path -LiteralPath $deviceFile)){return $false}
+        $device=Get-Content -LiteralPath $deviceFile -Raw|ConvertFrom-Json
+        if(-not [bool]$device.deviceId -or
+           -not [bool]$device.session.access_token -or
+           -not [bool]$device.session.refresh_token){
+            return $false
+        }
+
+        $pids=@($processes|Select-Object -ExpandProperty ProcessId)
+        return @(
+            Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+            Where-Object { $_.OwningProcess -in $pids -and $_.RemotePort -eq 443 }
+        ).Count -gt 0
+    }catch{
+        return $false
+    }
+}
 
 function Get-RemoteCommanderProcess {
     @(Get-CimInstance Win32_Process|Where-Object{
@@ -66,12 +101,23 @@ function Get-RemoteCommanderProcess {
 }
 
 function Start-RemoteCommanderHidden {
+    if(Test-RemoteCommanderEmergencyStop){
+        $script:dcDesiredOnline=$false
+        $script:dcOnline=$false
+        $script:dcChecked=$true
+        $script:dcConnecting=$false
+        return $false
+    }
     if(-not(Get-Command npx.cmd -ErrorAction SilentlyContinue)){
         $script:dcConnecting=$false
         return $false
     }
     $log=Join-Path $root 'state\logs\desktop-commander.log'
-    $cmd='npx.cmd @wonderwhy-er/desktop-commander@latest remote >> "'+$log+'" 2>&1'
+    try{
+        Add-Content -LiteralPath $log -Value ((Get-Date).ToString('o')+' START '+$script:desktopCommanderPackage) -Encoding UTF8
+    }catch{}
+    # Do not persist Remote Desktop Commander stdout/stderr: upstream output contains tool arguments and results.
+    $cmd='npx.cmd '+$script:desktopCommanderPackage+' remote > NUL 2>&1'
     Start-Process cmd.exe -ArgumentList '/c',$cmd -WindowStyle Hidden|Out-Null
     $script:lastRemoteRestart=Get-Date
     $script:dcChecked=$false
@@ -97,6 +143,9 @@ function Set-DesktopCommanderEnabled {
         [switch]$ForceRestart
     )
 
+    if($Enabled -and (Test-RemoteCommanderEmergencyStop)){
+        Remove-Item -LiteralPath $script:remoteCommanderKillSwitch -Force -ErrorAction SilentlyContinue
+    }
     $script:dcDesiredOnline=$Enabled
     if(-not $Enabled){
         Stop-RemoteCommander
@@ -106,9 +155,9 @@ function Set-DesktopCommanderEnabled {
     if($ForceRestart){Stop-RemoteCommander}
     $existing=@(Get-RemoteCommanderProcess)
     if($existing.Count -gt 0){
-        $script:dcOnline=$true
+        $script:dcOnline=Test-RemoteCommanderReady
         $script:dcChecked=$true
-        $script:dcConnecting=$false
+        $script:dcConnecting=(-not $script:dcOnline)
         $script:lastMaintenanceStart=[datetime]::MinValue
         return
     }
@@ -121,6 +170,25 @@ function Restart-RemoteCommander {
     if($connectionToggle){Set-ToggleSwitchChecked -Toggle $connectionToggle -Checked $true}
     $script:suppressConnectionToggle=$false
     Set-DesktopCommanderEnabled -Enabled $true -ForceRestart
+}
+
+function Invoke-DesktopCommanderEmergencyStop {
+    param([switch]$ForgetRemoteSession)
+
+    New-Item -ItemType Directory -Path $stateCacheRoot -Force|Out-Null
+    [IO.File]::WriteAllText(
+        $script:remoteCommanderKillSwitch,
+        ((Get-Date).ToString('o')+"`r`n"),
+        (New-Object Text.UTF8Encoding($false))
+    )
+    $script:dcDesiredOnline=$false
+    Stop-RemoteCommander
+    if($ForgetRemoteSession){
+        Remove-Item -LiteralPath (Join-Path $env:USERPROFILE '.desktop-commander-device\device.json') -Force -ErrorAction SilentlyContinue
+    }
+    $script:dcOnline=$false
+    $script:dcChecked=$true
+    $script:dcConnecting=$false
 }
 
 function Get-GitSnapshot {
@@ -997,6 +1065,7 @@ $miHide=$menu.Items.Add('Hide dashboard')
 $miClean=$menu.Items.Add('Clean safe worktrees')
 $miCheckUpdate=$menu.Items.Add('Check for updates now')
 $miRestart=$menu.Items.Add('Restart Desktop Commander')
+$miEmergency=$menu.Items.Add('Emergency disconnect Desktop Commander')
 $miFolder=$menu.Items.Add('Open MultiChat folder')
 [void]$menu.Items.Add('-')
 $miExit=$menu.Items.Add('Exit')
@@ -1019,6 +1088,13 @@ $miOpen.Add_Click({$form.Show();$form.WindowState='Normal';$form.Activate()})
 $miHide.Add_Click({$form.Hide()})
 $miFolder.Add_Click({Start-Process explorer.exe -ArgumentList $root})
 $miRestart.Add_Click({Restart-RemoteCommander})
+$miEmergency.Add_Click({
+    $ok=Show-MultiChatConfirm -Owner $form -Title 'Emergency disconnect?' -Message 'This immediately stops Desktop Commander remote access and removes its saved local authorization. Reconnecting will require authorization again.'
+    if($ok){
+        Invoke-DesktopCommanderEmergencyStop -ForgetRemoteSession
+        try{$notify.ShowBalloonTip(3000,'Desktop Commander disconnected','Remote access is stopped and local authorization was removed.','Warning')}catch{}
+    }
+})
 $miClean.Add_Click({Start-WorktreeCleanup})
 $miCheckUpdate.Add_Click({
     $script:updateDismissed=$false

@@ -12,6 +12,7 @@ foreach($required in @(
     'ChatMulti.psm1','ChatMulti.Advanced.ps1','ChatMulti.Hardening.ps1',
     'MultiChat-Tray.ps1','MultiChat.UI.ps1','MultiChat-Maintenance.ps1',
     'Cleanup-Worktrees.ps1','Validate-ManagedSession.ps1','Invoke-ManagedExternal.ps1','HardeningTest.ps1','CapacityTest.ps1',
+    'Emergency-Stop-DesktopCommander.ps1','Harden-DesktopCommander.ps1','SecurityTest.ps1',
     'Check-Updates.ps1','Update-MultiChat.ps1','Sign-ReleasePackage.ps1','Test-ReleaseSignature.ps1','Publish-Release.ps1',
     'RELEASE-PUBLIC-KEY.xml','config.json','PROMPT-FOR-CHATGPT.txt'
 )){
@@ -43,6 +44,27 @@ try{
     if(-not [bool](Get-ChatProp $cfg 'checkForUpdates' $false)){$errors+='checkForUpdates should default to true'}
     if([int](Get-ChatProp $cfg 'updateCheckHours' 0) -lt 1){$errors+='updateCheckHours is invalid'}
     if([string](Get-ChatProp $cfg 'updateChannel' '') -notin @('stable','beta')){$errors+='updateChannel is invalid'}
+
+    $trayText=[IO.File]::ReadAllText((Join-Path $root 'MultiChat-Tray.ps1'))
+    if($trayText -match '@wonderwhy-er/desktop-commander@latest'){
+        $errors+='Desktop Commander must not be launched from @latest'
+    }
+    if($trayText -notmatch '@wonderwhy-er/desktop-commander@0\.2\.51'){
+        $errors+='Desktop Commander package version is not pinned to the reviewed release'
+    }
+    if($trayText -notmatch 'remote > NUL 2>&1'){
+        $errors+='Desktop Commander stdout/stderr is not suppressed'
+    }
+    if($trayText -notmatch 'desktop-commander\.disabled'){
+        $errors+='Desktop Commander emergency kill switch is missing'
+    }
+    if($trayText -notmatch 'Test-RemoteCommanderReady'){
+        $errors+='Desktop Commander readiness validation is missing'
+    }
+    $maintenanceText=[IO.File]::ReadAllText((Join-Path $root 'MultiChat-Maintenance.ps1'))
+    if($maintenanceText -notmatch 'device\.json' -or $maintenanceText -notmatch 'Get-NetTCPConnection'){
+        $errors+='Desktop Commander maintenance status does not validate authorization and connectivity'
+    }
 
     try{
         $csp=New-Object Security.Cryptography.CspParameters
@@ -299,6 +321,11 @@ try{
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'HardeningTest.ps1')
     if($LASTEXITCODE -ne 0){
         $errors+="HardeningTest.ps1 failed with exit code $LASTEXITCODE"
+    }
+
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'SecurityTest.ps1')
+    if($LASTEXITCODE -ne 0){
+        $errors+="SecurityTest.ps1 failed with exit code $LASTEXITCODE"
     }
 
     Stop-ManagedChatSession
