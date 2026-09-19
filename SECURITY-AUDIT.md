@@ -31,14 +31,20 @@ Harmless canary probes confirmed that an authorized Remote Desktop Commander ses
 | Write Program Files | Denied |
 | Write HKLM Run | Denied |
 | Decrypt a synthetic CurrentUser DPAPI secret | Allowed |
+| Direct Desktop Commander file-tool access outside allowed project roots | Denied |
+| Shell access to the same out-of-scope user files | Allowed |
+| Remote mutation of Desktop Commander configuration (`set_config_value`) | Allowed |
 
 All persistence canaries were removed immediately after the test.
 
 The DPAPI result is important: a fully malicious but correctly authorized remote agent is not contained from secrets and files available to the signed-in user. UAC protects administrator-only locations, but it does not isolate one process running as the same user from that user's data.
 
+The audit also verified, without extracting secret values, that browser login/cookie databases and credential-manager-backed application authentication are reachable to the signed-in user. GitHub CLI is authenticated through the Windows keyring. File-tool folder scoping blocks direct `read_file`-style access outside approved roots, but terminal/process tools run as the same Windows user and can bypass that scope. Remote `set_config_value` can also alter Desktop Commander's own guardrail configuration, so those settings are not a containment boundary.
+
 ## Hardening implemented
 
 - Desktop Commander is pinned to the reviewed package version instead of using `@latest`.
+- Remote Desktop Commander starts **Off** on every MultiChat launch and must be enabled locally; an Off switch state also terminates any leftover remote process.
 - MultiChat no longer persists Desktop Commander stdout/stderr containing tool arguments and results.
 - Local Desktop Commander telemetry is disabled.
 - Remote authorization and Desktop Commander local state are protected by restrictive ACLs.
@@ -66,7 +72,7 @@ The values shown are the secure defaults used when the properties are absent.
 
 ## Residual risk
 
-Remote Desktop Commander still runs as the interactive Windows user. Therefore a correctly authorized but hostile AI can potentially read, alter, delete, or exfiltrate data that the user account can access and can use user-level persistence mechanisms.
+Remote Desktop Commander still runs as the interactive Windows user. Therefore a correctly authorized but hostile AI can potentially read, alter, delete, or exfiltrate data that the user account can access and can use user-level persistence mechanisms. Browser credential stores, CurrentUser DPAPI material, Windows Credential Manager entries, and application keyrings are part of this same-user risk surface.
 
 Command blocklists, path allowlists, MultiChat leases, and worktree rules are useful guardrails but are not a containment boundary against a deliberately hostile process running as the same Windows identity. In particular, `allowedDirectories` protects Desktop Commander's direct filesystem tools, but terminal commands still execute with the Windows user's permissions.
 

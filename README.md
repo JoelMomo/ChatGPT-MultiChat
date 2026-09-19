@@ -49,7 +49,7 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Short history of completed sessions.
 - Automatic background cleanup of finished worktrees that are verified `SAFE`, with manual cleanup retained as a fallback.
 - Recovery of abandoned sessions and dead owner processes.
-- Desktop Commander connection status with green/yellow/red LED, plus an On/Off connection switch.
+- Desktop Commander connection status with green/yellow/red LED, plus an On/Off connection switch. Remote access starts **Off** on every MultiChat launch and must be enabled locally when needed.
 - Automatic hidden restart of Desktop Commander while the connection switch is On.
 - Stable/Beta update channels with manual **Check now**.
 - In-app release notes and signed portable self-updates.
@@ -135,7 +135,7 @@ The screenshots above were captured from the portable build in an isolated Windo
 - Fixed the minimize-button container so its hover square is always fully visible.
 - Replaced the header's flow layout with fixed-position window controls.
 - Added a status LED for Desktop Commander: green `ONLINE`, yellow `CONNECTING`, red `OFFLINE`.
-- Added a connection switch in the header. It defaults to On at every app launch.
+- Added a connection switch in the header. It originally defaulted to On; current hardened builds start remote access Off on every app launch.
 - Switching Off stops Desktop Commander and disables automatic reconnect attempts until the switch is turned On again.
 - Switching On starts Desktop Commander when needed and transitions through `CONNECTING` to `ONLINE`.
 
@@ -404,7 +404,7 @@ The main settings live in `config.json`:
 | `remoteIdleDisconnectMinutes` | 30 | Stop Remote Desktop Commander after this many minutes with no managed chats; `0` disables the idle cutoff |
 | `remotePurgeHistoryOnDisconnect` | true | Remove local Desktop Commander tool-history files whenever remote access is stopped |
 
-The three remote-security values above are secure code defaults even when the properties are absent from an older `config.json`.
+The three remote-security values above are secure code defaults even when the properties are absent from an older `config.json`. Remote Desktop Commander itself also starts **Off** on every MultiChat launch; this startup rule is not controlled by `config.json`.
 
 MultiChat also synchronizes Desktop Commander's `allowedDirectories` with registered project roots plus the conventional `source\repos` development root. This blocks direct filesystem-tool access outside those locations. It is a guardrail, not an OS sandbox: terminal commands still run with the Windows user's permissions.
 

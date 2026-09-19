@@ -28,8 +28,8 @@ $script:maintenanceProcess=$null
 $script:maintenanceResultFile=$null
 $script:dcOnline=$false
 $script:dcChecked=$false
-$script:dcDesiredOnline=$true
-$script:dcConnecting=$true
+$script:dcDesiredOnline=$false
+$script:dcConnecting=$false
 $script:suppressConnectionToggle=$false
 $script:lastActiveChatAt=Get-Date
 $script:remoteIdleNoticeShown=$false
@@ -252,6 +252,11 @@ function Test-WorkstationLocked {
 
 function Apply-RemoteExposurePolicy {
     param([Parameter(Mandatory)][array]$Sessions)
+
+    if(-not $script:dcDesiredOnline -and @(Get-RemoteCommanderProcess).Count -gt 0){
+        Stop-RemoteCommander
+        return
+    }
 
     if([bool](Get-ChatProp $cfg 'remoteDisconnectOnLock' $true) -and (Test-WorkstationLocked)){
         if($script:dcDesiredOnline -or @(Get-RemoteCommanderProcess).Count -gt 0){
@@ -904,12 +909,12 @@ $connectionLabel.Font=New-Object Drawing.Font('Segoe UI Semibold',9)
 $connectionLabel.Location=New-Object Drawing.Point(18,8)
 $connectionPanel.Controls.Add($connectionLabel)
 
-$connectionToggle=New-ToggleSwitch -Checked $true
+$connectionToggle=New-ToggleSwitch -Checked $script:dcDesiredOnline
 $connectionToggle.Location=New-Object Drawing.Point(220,7)
 $connectionPanel.Controls.Add($connectionToggle)
 
 $connectionToolTip=New-Object Windows.Forms.ToolTip
-$connectionToolTip.SetToolTip($connectionToggle,'Enable or disable Desktop Commander. Security defaults: disconnect on Windows lock and after 30 minutes without managed chats.')
+$connectionToolTip.SetToolTip($connectionToggle,'Remote access starts Off. Turn it On locally when needed; it also disconnects on Windows lock and after 30 minutes without managed chats.')
 
 $capacityPanel=New-Object Windows.Forms.Panel
 $capacityPanel.Location=New-Object Drawing.Point(274,0)

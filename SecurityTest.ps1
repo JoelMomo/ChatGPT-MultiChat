@@ -50,6 +50,15 @@ if(Test-Path -LiteralPath $trayPath){
     if(-not $tray.Contains("Get-ChatProp `$cfg 'remotePurgeHistoryOnDisconnect' `$true")){
         Add-Failure 'Remote history purge-on-disconnect secure default is missing'
     }
+    if(-not $tray.Contains('$script:dcDesiredOnline=$false')){
+        Add-Failure 'Remote access must start disabled by default'
+    }
+    if(-not $tray.Contains('$connectionToggle=New-ToggleSwitch -Checked $script:dcDesiredOnline')){
+        Add-Failure 'Desktop Commander toggle does not follow the secure startup state'
+    }
+    if($tray -notmatch 'if\(-not \$script:dcDesiredOnline -and @\(Get-RemoteCommanderProcess\)\.Count -gt 0\)'){
+        Add-Failure 'Remote processes are not forced off when the local switch is Off'
+    }
     if($tray -notmatch 'Clear-RemoteCommanderSensitiveHistory'){
         Add-Failure 'Remote sensitive history cleanup is missing'
     }
@@ -89,7 +98,7 @@ if(Test-Path -LiteralPath $promptPath){
 
 if(Test-Path -LiteralPath $gitIgnorePath){
     $gitIgnore=[IO.File]::ReadAllText($gitIgnorePath)
-    if($gitIgnore -notmatch '(?m)^Configure-ThorGitHubSigningSecrets\.ps1$'){
+    if($gitIgnore -notmatch '(?m)^Configure-ThorGitHubSigningSecrets\.ps1\r?$'){
         Add-Failure 'Local GitHub signing helper is not protected by .gitignore'
     }
     foreach($pattern in @('.env','*.pem','*.key','*.pfx','*.p12')){
