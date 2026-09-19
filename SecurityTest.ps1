@@ -53,6 +53,9 @@ if(Test-Path -LiteralPath $trayPath){
     if($tray -notmatch 'Clear-RemoteCommanderSensitiveHistory'){
         Add-Failure 'Remote sensitive history cleanup is missing'
     }
+    if($tray -notmatch 'Sync-RemoteCommanderAllowedDirectories'){
+        Add-Failure 'Desktop Commander file-tool scope synchronization is missing'
+    }
     if($tray -notmatch '\$miExit\.Add_Click\(\{[\s\S]*?Stop-RemoteCommander'){
         Add-Failure 'Desktop Commander is not stopped when MultiChat exits'
     }
@@ -137,6 +140,19 @@ if($Runtime){
             $cfg=Get-Content -LiteralPath $configFile -Raw|ConvertFrom-Json
             if([bool]$cfg.telemetryEnabled){
                 Add-Failure 'Desktop Commander telemetry is enabled'
+            }
+            $allowed=@($cfg.allowedDirectories|Where-Object{$_})
+            if($allowed.Count -eq 0){
+                Add-Failure 'Desktop Commander file tools are not scoped to project directories'
+            }else{
+                $profile=[IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+                foreach($path in $allowed){
+                    $normalized=[IO.Path]::GetFullPath([string]$path).TrimEnd('\')
+                    if($normalized.Equals($profile,[StringComparison]::OrdinalIgnoreCase) -or
+                       $normalized.Equals([IO.Path]::GetPathRoot($normalized),[StringComparison]::OrdinalIgnoreCase)){
+                        Add-Failure ('Desktop Commander allowedDirectories is too broad: '+$normalized)
+                    }
+                }
             }
         }catch{
             Add-Failure 'Desktop Commander config could not be read'

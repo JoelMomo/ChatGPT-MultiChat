@@ -406,6 +406,8 @@ The main settings live in `config.json`:
 
 The three remote-security values above are secure code defaults even when the properties are absent from an older `config.json`.
 
+MultiChat also synchronizes Desktop Commander's `allowedDirectories` with registered project roots plus the conventional `source\repos` development root. This blocks direct filesystem-tool access outside those locations. It is a guardrail, not an OS sandbox: terminal commands still run with the Windows user's permissions.
+
 Additional static resource-lock rules are defined in `config.json`. Android serial and AVD identities are resolved dynamically by MultiChat.
 
 ## Updates and release signing

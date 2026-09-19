@@ -42,6 +42,7 @@ The DPAPI result is important: a fully malicious but correctly authorized remote
 - MultiChat no longer persists Desktop Commander stdout/stderr containing tool arguments and results.
 - Local Desktop Commander telemetry is disabled.
 - Remote authorization and Desktop Commander local state are protected by restrictive ACLs.
+- Desktop Commander file tools are automatically scoped to registered project roots plus the conventional `source\repos` development root. Direct file-tool access outside that scope is rejected.
 - Dashboard ONLINE state requires a persisted authorization record plus an established Remote Desktop Commander HTTPS connection.
 - An emergency disconnect stops Remote Desktop Commander, revokes the current server-side device row and authentication session when possible, removes local authorization, and records only non-secret result metadata.
 - Remote access disconnects when Windows is locked by default.
@@ -67,7 +68,7 @@ The values shown are the secure defaults used when the properties are absent.
 
 Remote Desktop Commander still runs as the interactive Windows user. Therefore a correctly authorized but hostile AI can potentially read, alter, delete, or exfiltrate data that the user account can access and can use user-level persistence mechanisms.
 
-Command blocklists, path allowlists, MultiChat leases, and worktree rules are useful guardrails but are not a containment boundary against a deliberately hostile process running as the same Windows identity.
+Command blocklists, path allowlists, MultiChat leases, and worktree rules are useful guardrails but are not a containment boundary against a deliberately hostile process running as the same Windows identity. In particular, `allowedDirectories` protects Desktop Commander's direct filesystem tools, but terminal commands still execute with the Windows user's permissions.
 
 ## Strong containment target
 

@@ -73,6 +73,58 @@ function Test-RemoteCommanderEmergencyStop {
     Test-Path -LiteralPath $script:remoteCommanderKillSwitch
 }
 
+function Get-RemoteCommanderAllowedDirectories {
+    $candidates=New-Object Collections.Generic.List[string]
+    [void]$candidates.Add($root)
+
+    $projectsFile=Join-Path $root 'state\projects.json'
+    if(Test-Path -LiteralPath $projectsFile){
+        $projects=$null
+        for($attempt=0;$attempt -lt 3 -and $null -eq $projects;$attempt++){
+            try{$projects=Get-Content -LiteralPath $projectsFile -Raw|ConvertFrom-Json}catch{Start-Sleep -Milliseconds 100}
+        }
+        foreach($project in @($projects|ForEach-Object{$_})){
+            $path=[string]$project.path
+            if($path -and (Test-Path -LiteralPath $path)){[void]$candidates.Add($path)}
+        }
+    }
+
+    $sourceRepos=Join-Path $env:USERPROFILE 'source\repos'
+    if(Test-Path -LiteralPath $sourceRepos){[void]$candidates.Add($sourceRepos)}
+
+    $normalized=@($candidates|ForEach-Object{
+        try{[IO.Path]::GetFullPath($_).TrimEnd('\')}catch{}
+    }|Where-Object{$_}|Sort-Object Length,ToLowerInvariant -Unique)
+
+    $result=New-Object Collections.Generic.List[string]
+    foreach($path in $normalized){
+        $nested=$false
+        foreach($parent in $result){
+            if($path.Equals($parent,[StringComparison]::OrdinalIgnoreCase) -or
+               $path.StartsWith(($parent+'\'),[StringComparison]::OrdinalIgnoreCase)){
+                $nested=$true
+                break
+            }
+        }
+        if(-not $nested){[void]$result.Add($path)}
+    }
+    return @($result)
+}
+
+function Sync-RemoteCommanderAllowedDirectories {
+    $configPath=Join-Path $env:USERPROFILE '.claude-server-commander\config.json'
+    if(-not(Test-Path -LiteralPath $configPath)){return}
+    try{
+        $obj=Get-Content -LiteralPath $configPath -Raw|ConvertFrom-Json
+        $allowed=@(Get-RemoteCommanderAllowedDirectories)
+        $prop=$obj.PSObject.Properties['allowedDirectories']
+        if($prop){$prop.Value=$allowed}else{$obj|Add-Member -NotePropertyName allowedDirectories -NotePropertyValue $allowed}
+        $tmp=$configPath+'.scope.tmp'
+        [IO.File]::WriteAllText($tmp,($obj|ConvertTo-Json -Depth 30),(New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $configPath -Force
+    }catch{}
+}
+
 function Test-RemoteCommanderReady {
     try{
         $processes=@(Get-RemoteCommanderProcess)
@@ -104,6 +156,7 @@ function Get-RemoteCommanderProcess {
 }
 
 function Start-RemoteCommanderHidden {
+    Sync-RemoteCommanderAllowedDirectories
     if(Test-RemoteCommanderEmergencyStop){
         $script:dcDesiredOnline=$false
         $script:dcOnline=$false
@@ -1223,6 +1276,7 @@ $timer.Add_Tick({Refresh-Dashboard})
 $form.Add_ResizeBegin({$timer.Stop()})
 $form.Add_ResizeEnd({Refresh-Dashboard;$timer.Start()})
 
+Sync-RemoteCommanderAllowedDirectories
 Start-UpdateCheck
 Start-MaintenanceWorker
 Start-WorktreeScan

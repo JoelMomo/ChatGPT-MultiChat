@@ -2,6 +2,16 @@ $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $errors=@()
 Import-Module (Join-Path $root 'ChatMulti.psm1') -Force -DisableNameChecking
+$chatModule=Get-Module ChatMulti
+if($chatModule){
+    # Keep the test independent of how many production chat slots are currently occupied.
+    # This changes only this test process's module cache; config.json is never modified.
+    & $chatModule {
+        $testConfig=Get-ChatConfig
+        if([int]$testConfig.maxSlots -lt 32){$testConfig.maxSlots=32}
+        $script:ChatConfigCache=$testConfig
+    }
+}
 
 function Add-Failure([string]$Message){$script:errors+=$Message}
 function Assert-True($Condition,[string]$Message){if(-not $Condition){Add-Failure $Message}}

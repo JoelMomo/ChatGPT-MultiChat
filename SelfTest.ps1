@@ -151,6 +151,17 @@ try{
         $errors+="CapacityTest.ps1 failed with exit code $LASTEXITCODE"
     }
 
+    $chatModule=Get-Module ChatMulti
+    if($chatModule){
+        # Test sessions must remain runnable while the user's configured production slots are full.
+        # Raise capacity only in this SelfTest process; config.json is left unchanged.
+        & $chatModule {
+            $testConfig=Get-ChatConfig
+            if([int]$testConfig.maxSlots -lt 32){$testConfig.maxSlots=32}
+            $script:ChatConfigCache=$testConfig
+        }
+    }
+
     $session=New-ManagedChatSession -Task 'PORTABLE-SELFTEST' -NoWorktree
     Set-ManagedChatState -Status 'WORKING' -LastCommand 'SelfTest'
     if(-not $session.devPort){$errors+='No port was reserved'}
