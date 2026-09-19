@@ -64,6 +64,9 @@ try{
     if($trayText -notmatch 'Close-DashboardSession' -or $trayText -notmatch 'Add_CellMouseDown'){
         $errors+='Dashboard right-click session close action is missing'
     }
+    if($trayText -notmatch 'activationEventName' -or $trayText -notmatch 'OpenExisting' -or $trayText -notmatch 'WaitOne\(0\)'){
+        $errors+='Single-instance dashboard activation signal is missing'
+    }
     $moduleText=[IO.File]::ReadAllText((Join-Path $root 'ChatMulti.psm1'))
     if($moduleText -notmatch 'function Close-ManagedChatSession' -or $moduleText -notmatch 'PID_MISMATCH'){
         $errors+='Managed chat close safety checks are missing'

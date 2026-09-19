@@ -14,10 +14,25 @@ $cfg=Get-ChatConfig
 
 $createdNew=$false
 $mutex=New-Object Threading.Mutex($true,$InstanceName,[ref]$createdNew)
+$activationEventName=$InstanceName+'-Activate'
 if(-not $createdNew){
-    [Windows.Forms.MessageBox]::Show('ChatGPT MultiChat Agent is already running.','MultiChat')|Out-Null
+    $signaled=$false
+    for($attempt=0;$attempt -lt 10 -and -not $signaled;$attempt++){
+        try{
+            $existingEvent=[Threading.EventWaitHandle]::OpenExisting($activationEventName)
+            [void]$existingEvent.Set()
+            $existingEvent.Dispose()
+            $signaled=$true
+        }catch{
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if(-not $signaled){
+        [Windows.Forms.MessageBox]::Show('ChatGPT MultiChat is already running in the system tray. Double-click its tray icon to open the dashboard.','MultiChat')|Out-Null
+    }
     exit 0
 }
+$activationEvent=New-Object Threading.EventWaitHandle($false,[Threading.EventResetMode]::AutoReset,$activationEventName)
 
 $script:exiting=$false
 $script:lastRemoteRestart=[datetime]::MinValue
@@ -1245,6 +1260,13 @@ $notify.Icon=[Drawing.SystemIcons]::Application
 $notify.Text='ChatGPT MultiChat'
 $notify.Visible=$true
 
+$showDashboard={
+    $form.Show()
+    if($form.WindowState -eq 'Minimized'){$form.WindowState='Normal'}
+    $form.BringToFront()
+    [void]$form.Activate()
+}
+
 $menu=New-Object Windows.Forms.ContextMenuStrip
 $miOpen=$menu.Items.Add('Open dashboard')
 $miHide=$menu.Items.Add('Hide dashboard')
@@ -1271,7 +1293,7 @@ if(Test-Path -LiteralPath $previousUpdateResult){
     Remove-Item -LiteralPath $previousUpdateResult -Force -ErrorAction SilentlyContinue
 }
 
-$miOpen.Add_Click({$form.Show();$form.WindowState='Normal';$form.Activate()})
+$miOpen.Add_Click({& $showDashboard})
 $miHide.Add_Click({$form.Hide()})
 $miFolder.Add_Click({Start-Process explorer.exe -ArgumentList $root})
 $miRestart.Add_Click({Restart-RemoteCommander})
@@ -1318,7 +1340,7 @@ $channelCombo.Add_SelectedIndexChanged({
         Start-UpdateCheck -Force -Manual
     }
 })
-$notify.Add_DoubleClick({$form.Show();$form.WindowState='Normal';$form.Activate()})
+$notify.Add_DoubleClick({& $showDashboard})
 
 $form.Add_FormClosing({
     param($sender,$e)
@@ -1343,11 +1365,18 @@ $miExit.Add_Click({
 
 $timer=New-Object Windows.Forms.Timer
 $timer.Interval=[Math]::Max(750,([int]$cfg.refreshSeconds*1000))
-$timer.Add_Tick({Refresh-Dashboard})
+$timer.Add_Tick({
+    if($activationEvent.WaitOne(0)){& $showDashboard}
+    Refresh-Dashboard
+})
 $form.Add_ResizeBegin({$timer.Stop()})
 $form.Add_ResizeEnd({Refresh-Dashboard;$timer.Start()})
 
 Sync-RemoteCommanderAllowedDirectories
+if(@(Get-RemoteCommanderProcess).Count -gt 0){
+    $script:dcDesiredOnline=$true
+    $script:dcConnecting=$true
+}
 Start-UpdateCheck
 Start-MaintenanceWorker
 Start-WorktreeScan
@@ -1358,5 +1387,6 @@ if(-not $StartHidden){$form.Show()}
 
 Stop-RemoteCommander
 $notify.Visible=$false
+$activationEvent.Dispose()
 $mutex.ReleaseMutex()
 $mutex.Dispose()
