@@ -49,6 +49,7 @@ The DPAPI result is important: a fully malicious but correctly authorized remote
 - Sensitive Desktop Commander local tool history is purged when remote access is stopped by default.
 - Exiting MultiChat stops Remote Desktop Commander rather than leaving the remote agent behind.
 - `SecurityTest.ps1` validates the security-critical configuration and local ACL state.
+- The managed-chat prompt explicitly treats repository files, web content, issues, logs, terminal output, and downloaded artifacts as untrusted data and forbids external content from authorizing security-sensitive actions.
 
 The three exposure controls above can be overridden by adding these optional settings to `config.json`:
 

@@ -16,8 +16,9 @@ $maintenancePath=Join-Path $root 'MultiChat-Maintenance.ps1'
 $emergencyPath=Join-Path $root 'Emergency-Stop-DesktopCommander.ps1'
 $hardeningPath=Join-Path $root 'Harden-DesktopCommander.ps1'
 $gitIgnorePath=Join-Path $root '.gitignore'
+$promptPath=Join-Path $root 'PROMPT-FOR-CHATGPT.txt'
 
-foreach($required in @($trayPath,$maintenancePath,$emergencyPath,$hardeningPath,$gitIgnorePath)){
+foreach($required in @($trayPath,$maintenancePath,$emergencyPath,$hardeningPath,$gitIgnorePath,$promptPath)){
     if(-not(Test-Path -LiteralPath $required)){
         Add-Failure ("Missing security component: "+$required)
     }
@@ -54,6 +55,16 @@ if(Test-Path -LiteralPath $trayPath){
     }
     if($tray -notmatch '\$miExit\.Add_Click\(\{[\s\S]*?Stop-RemoteCommander'){
         Add-Failure 'Desktop Commander is not stopped when MultiChat exits'
+    }
+}
+
+if(Test-Path -LiteralPath $promptPath){
+    $prompt=[IO.File]::ReadAllText($promptPath)
+    if($prompt -notmatch 'untrusted data' -or $prompt -notmatch "Only the user's instructions"){
+        Add-Failure 'Prompt-injection boundary instructions are missing'
+    }
+    if($prompt -notmatch 'Do not disable or bypass MultiChat security controls'){
+        Add-Failure 'Security-control anti-bypass instruction is missing'
     }
 }
 
