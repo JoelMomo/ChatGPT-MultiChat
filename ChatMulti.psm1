@@ -19,8 +19,12 @@ function Get-ChatEmoji([int]$Slot) {
 }
 
 function Get-ChatColor([int]$Slot) {
-    # Deliberately high-contrast, stable color per slot.
-    $colors = @('Green','Cyan','Magenta','Yellow','Blue','Red','White','DarkCyan')
+    # Stable console colors. WinForms uses a larger 24-color palette.
+    $colors = @(
+        'Green','Cyan','Magenta','Yellow','Blue','Red','White',
+        'DarkCyan','DarkGreen','DarkMagenta','DarkYellow','DarkBlue','DarkRed','Gray'
+    )
+    if($Slot -lt 1){$Slot=1}
     return $colors[($Slot-1) % $colors.Count]
 }
 
@@ -154,10 +158,16 @@ function Expire-IdleManagedChatSessions {
     return $expired
 }
 
-function Claim-ChatSlot([string]$SessionId) {
+function Claim-ChatSlot {
+    param(
+        [Parameter(Mandatory)][string]$SessionId,
+        [switch]$SkipExpiry
+    )
     Initialize-ChatMulti
-    Expire-IdleManagedChatSessions | Out-Null
+    if(-not $SkipExpiry){Expire-IdleManagedChatSessions | Out-Null}
     $maxSlots = [int](Get-ChatConfig).maxSlots
+    if($maxSlots -lt 2){$maxSlots=2}
+    if($maxSlots -gt 32){$maxSlots=32}
     for ($slot=1; $slot -le $maxSlots; $slot++) {
         $slotFile = Join-Path $script:SlotRoot ("slot-{0}.json" -f $slot)
         if (Test-Path $slotFile) {

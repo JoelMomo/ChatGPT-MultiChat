@@ -1,4 +1,4 @@
-$script:UiColors = @{
+$global:MultiChatUiColors = @{
     Bg       = [Drawing.Color]::FromArgb(14,16,20)
     Surface  = [Drawing.Color]::FromArgb(21,24,30)
     Surface2 = [Drawing.Color]::FromArgb(28,32,40)
@@ -11,6 +11,9 @@ $script:UiColors = @{
     Warn     = [Drawing.Color]::FromArgb(245,190,75)
     Bad      = [Drawing.Color]::FromArgb(244,106,106)
 }
+
+# Keep a script-local alias for the dashboard while UI helper functions use the shared theme.
+$script:UiColors=$global:MultiChatUiColors
 
 function Enable-ControlDoubleBuffer {
     param([Parameter(Mandatory)]$Control)
@@ -36,16 +39,16 @@ function New-FlatButton {
     $button.Height = 34
     $button.FlatStyle = 'Flat'
     $button.FlatAppearance.BorderSize = 1
-    $button.FlatAppearance.BorderColor = if($Accent){$script:UiColors.Accent}else{$script:UiColors.Border}
-    $button.BackColor = if($Accent){[Drawing.Color]::FromArgb(31,70,82)}else{$script:UiColors.Surface2}
-    $button.ForeColor = $script:UiColors.Text
+    $button.FlatAppearance.BorderColor = if($Accent){$global:MultiChatUiColors.Accent}else{$global:MultiChatUiColors.Border}
+    $button.BackColor = if($Accent){[Drawing.Color]::FromArgb(31,70,82)}else{$global:MultiChatUiColors.Surface2}
+    $button.ForeColor = $global:MultiChatUiColors.Text
     $button.Font = New-Object Drawing.Font('Segoe UI',9,[Drawing.FontStyle]::Regular)
     $button.Cursor = [Windows.Forms.Cursors]::Hand
     $button.Margin = New-Object Windows.Forms.Padding(6,0,0,0)
     $button.TabStop = $false
 
     $normalBack = $button.BackColor
-    $hoverBack = if($Accent){[Drawing.Color]::FromArgb(38,84,98)}else{$script:UiColors.Surface3}
+    $hoverBack = if($Accent){[Drawing.Color]::FromArgb(38,84,98)}else{$global:MultiChatUiColors.Surface3}
     $button.Add_MouseEnter({$this.BackColor=$hoverBack}.GetNewClosure())
     $button.Add_MouseLeave({$this.BackColor=$normalBack}.GetNewClosure())
     return $button
@@ -60,14 +63,14 @@ function New-MetricCard {
     $card = New-Object Windows.Forms.Panel
     $card.Width = $Width
     $card.Height = 56
-    $card.BackColor = $script:UiColors.Surface2
+    $card.BackColor = $global:MultiChatUiColors.Surface2
     $card.Margin = New-Object Windows.Forms.Padding(0,0,10,0)
 
     $titleLabel = New-Object Windows.Forms.Label
     $titleLabel.Text = $Title.ToUpperInvariant()
     $titleLabel.AutoSize = $true
     $titleLabel.Font = New-Object Drawing.Font('Segoe UI Semibold',7.5)
-    $titleLabel.ForeColor = $script:UiColors.Muted
+    $titleLabel.ForeColor = $global:MultiChatUiColors.Muted
     $titleLabel.Location = New-Object Drawing.Point(12,8)
     $card.Controls.Add($titleLabel)
 
@@ -75,7 +78,7 @@ function New-MetricCard {
     $valueLabel.Text = '--'
     $valueLabel.AutoSize = $true
     $valueLabel.Font = New-Object Drawing.Font('Segoe UI Semibold',12)
-    $valueLabel.ForeColor = $script:UiColors.Text
+    $valueLabel.ForeColor = $global:MultiChatUiColors.Text
     $valueLabel.Location = New-Object Drawing.Point(11,27)
     $card.Controls.Add($valueLabel)
 
@@ -91,25 +94,28 @@ function Set-MetricCard {
     )
     if ($Card.MetricValueLabel.Text -ne $Value) { $Card.MetricValueLabel.Text = $Value }
     $color = switch($Tone) {
-        'Good' { $script:UiColors.Good }
-        'Warn' { $script:UiColors.Warn }
-        'Bad' { $script:UiColors.Bad }
-        default { $script:UiColors.Text }
+        'Good' { $global:MultiChatUiColors.Good }
+        'Warn' { $global:MultiChatUiColors.Warn }
+        'Bad' { $global:MultiChatUiColors.Bad }
+        default { $global:MultiChatUiColors.Text }
     }
     if ($Card.MetricValueLabel.ForeColor -ne $color) { $Card.MetricValueLabel.ForeColor = $color }
 }
 
 function Get-SlotColor([int]$Slot) {
-    switch ($Slot) {
-        1 { [Drawing.Color]::FromArgb(91,214,153) }
-        2 { [Drawing.Color]::FromArgb(94,211,243) }
-        3 { [Drawing.Color]::FromArgb(217,125,255) }
-        4 { [Drawing.Color]::FromArgb(245,190,75) }
-        5 { [Drawing.Color]::FromArgb(102,153,255) }
-        6 { [Drawing.Color]::FromArgb(255,126,108) }
-        7 { [Drawing.Color]::FromArgb(225,229,238) }
-        default { [Drawing.Color]::FromArgb(87,180,180) }
-    }
+    $palette=@(
+        @(91,214,153), @(94,211,243), @(217,125,255), @(245,190,75),
+        @(102,153,255), @(255,126,108), @(225,229,238), @(87,180,180),
+        @(255,168,76), @(151,125,255), @(177,220,95), @(255,122,178),
+        @(120,186,255), @(230,154,73), @(99,221,190), @(188,144,255),
+        @(241,145,128), @(81,201,214), @(194,210,92), @(235,127,205),
+        @(116,151,224), @(215,144,89), @(110,193,156), @(153,162,255),
+        @(255,198,112), @(125,216,233), @(205,139,230), @(143,213,118),
+        @(237,117,151), @(127,173,255), @(225,177,96), @(104,205,180)
+    )
+    if($Slot -lt 1){$Slot=1}
+    $rgb=$palette[($Slot-1) % $palette.Count]
+    return [Drawing.Color]::FromArgb([int]$rgb[0],[int]$rgb[1],[int]$rgb[2])
 }
 
 function Format-SessionAge {
@@ -216,8 +222,8 @@ function Show-MultiChatConfirm {
     $dialog.MinimumSize = $dialog.Size
     $dialog.MaximumSize = $dialog.Size
     $dialog.StartPosition = 'CenterParent'
-    $dialog.BackColor = $script:UiColors.Surface
-    $dialog.ForeColor = $script:UiColors.Text
+    $dialog.BackColor = $global:MultiChatUiColors.Surface
+    $dialog.ForeColor = $global:MultiChatUiColors.Text
     $dialog.FormBorderStyle = 'None'
     $dialog.ShowInTaskbar = $false
     $dialog.Padding = New-Object Windows.Forms.Padding(18)
@@ -227,7 +233,7 @@ function Show-MultiChatConfirm {
     $titleLabel.Text = $Title
     $titleLabel.AutoSize = $true
     $titleLabel.Font = New-Object Drawing.Font('Segoe UI Semibold',11)
-    $titleLabel.ForeColor = $script:UiColors.Text
+    $titleLabel.ForeColor = $global:MultiChatUiColors.Text
     $titleLabel.Location = New-Object Drawing.Point(18,15)
     $dialog.Controls.Add($titleLabel)
 
@@ -235,7 +241,7 @@ function Show-MultiChatConfirm {
     $messageLabel.Text = $Message
     $messageLabel.Size = New-Object Drawing.Size(470,52)
     $messageLabel.Font = New-Object Drawing.Font('Segoe UI',9.5)
-    $messageLabel.ForeColor = $script:UiColors.Text
+    $messageLabel.ForeColor = $global:MultiChatUiColors.Text
     $messageLabel.Location = New-Object Drawing.Point(18,52)
     $dialog.Controls.Add($messageLabel)
 
@@ -273,8 +279,8 @@ function Show-MultiChatInfo {
     $dialog.MinimumSize = $dialog.Size
     $dialog.MaximumSize = $dialog.Size
     $dialog.StartPosition = 'CenterParent'
-    $dialog.BackColor = $script:UiColors.Surface
-    $dialog.ForeColor = $script:UiColors.Text
+    $dialog.BackColor = $global:MultiChatUiColors.Surface
+    $dialog.ForeColor = $global:MultiChatUiColors.Text
     $dialog.FormBorderStyle = 'None'
     $dialog.ShowInTaskbar = $false
 
@@ -282,7 +288,7 @@ function Show-MultiChatInfo {
     $titleLabel.Text = $Title
     $titleLabel.AutoSize = $true
     $titleLabel.Font = New-Object Drawing.Font('Segoe UI Semibold',11)
-    $titleLabel.ForeColor = $script:UiColors.Text
+    $titleLabel.ForeColor = $global:MultiChatUiColors.Text
     $titleLabel.Location = New-Object Drawing.Point(18,15)
     $dialog.Controls.Add($titleLabel)
 
@@ -290,7 +296,7 @@ function Show-MultiChatInfo {
     $messageLabel.Text = $Message
     $messageLabel.Size = New-Object Drawing.Size(410,48)
     $messageLabel.Font = New-Object Drawing.Font('Segoe UI',9.5)
-    $messageLabel.ForeColor = $script:UiColors.Text
+    $messageLabel.ForeColor = $global:MultiChatUiColors.Text
     $messageLabel.Location = New-Object Drawing.Point(18,50)
     $dialog.Controls.Add($messageLabel)
 
@@ -324,8 +330,8 @@ function Show-MultiChatReleaseNotes {
     $dialog.MinimumSize=$dialog.Size
     $dialog.MaximumSize=$dialog.Size
     $dialog.StartPosition='CenterParent'
-    $dialog.BackColor=$script:UiColors.Surface
-    $dialog.ForeColor=$script:UiColors.Text
+    $dialog.BackColor=$global:MultiChatUiColors.Surface
+    $dialog.ForeColor=$global:MultiChatUiColors.Text
     $dialog.FormBorderStyle='None'
     $dialog.ShowInTaskbar=$false
 
@@ -333,7 +339,7 @@ function Show-MultiChatReleaseNotes {
     $titleLabel.Text="What's new in v$Version"
     $titleLabel.AutoSize=$true
     $titleLabel.Font=New-Object Drawing.Font('Segoe UI Semibold',12)
-    $titleLabel.ForeColor=$script:UiColors.Text
+    $titleLabel.ForeColor=$global:MultiChatUiColors.Text
     $titleLabel.Location=New-Object Drawing.Point(18,15)
     $dialog.Controls.Add($titleLabel)
 
@@ -342,8 +348,8 @@ function Show-MultiChatReleaseNotes {
     $notesBox.ReadOnly=$true
     $notesBox.ScrollBars='Vertical'
     $notesBox.BorderStyle='FixedSingle'
-    $notesBox.BackColor=$script:UiColors.Surface2
-    $notesBox.ForeColor=$script:UiColors.Text
+    $notesBox.BackColor=$global:MultiChatUiColors.Surface2
+    $notesBox.ForeColor=$global:MultiChatUiColors.Text
     $notesBox.Font=New-Object Drawing.Font('Segoe UI',9.5)
     $notesBox.Location=New-Object Drawing.Point(18,52)
     $notesBox.Size=New-Object Drawing.Size(604,340)
@@ -383,17 +389,17 @@ function New-WindowButton {
     $button.FlatStyle='Flat'
     $button.FlatAppearance.BorderSize=0
     $button.UseVisualStyleBackColor=$false
-    $button.BackColor=$script:UiColors.Bg
-    $button.ForeColor=$script:UiColors.Text
+    $button.BackColor=$global:MultiChatUiColors.Bg
+    $button.ForeColor=$global:MultiChatUiColors.Text
     $button.Font=New-Object Drawing.Font('Segoe UI Symbol',11,[Drawing.FontStyle]::Regular)
     $button.TextAlign='MiddleCenter'
     $button.Margin=New-Object Windows.Forms.Padding(0)
     $button.TabStop=$false
     $button.Cursor=[Windows.Forms.Cursors]::Hand
 
-    $normal=$script:UiColors.Bg
-    $hover=if($CloseButton){[Drawing.Color]::FromArgb(155,55,55)}else{$script:UiColors.Surface3}
-    $pressed=if($CloseButton){[Drawing.Color]::FromArgb(185,65,65)}else{$script:UiColors.Surface2}
+    $normal=$global:MultiChatUiColors.Bg
+    $hover=if($CloseButton){[Drawing.Color]::FromArgb(155,55,55)}else{$global:MultiChatUiColors.Surface3}
+    $pressed=if($CloseButton){[Drawing.Color]::FromArgb(185,65,65)}else{$global:MultiChatUiColors.Surface2}
     $button.FlatAppearance.MouseOverBackColor=$hover
     $button.FlatAppearance.MouseDownBackColor=$pressed
     $button.Add_MouseEnter({$this.BackColor=$hover}.GetNewClosure())
@@ -464,7 +470,7 @@ function New-StatusLed {
 
     $led=New-Object Windows.Forms.Panel
     $led.Size=New-Object Drawing.Size($Size,$Size)
-    $led.Tag=$script:UiColors.Muted
+    $led.Tag=$global:MultiChatUiColors.Muted
     $led.Add_Paint({
         param($sender,$e)
         $e.Graphics.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -490,7 +496,7 @@ function New-ToggleSwitch {
 
     $toggle=New-Object Windows.Forms.Panel
     $toggle.Size=New-Object Drawing.Size(44,22)
-    $toggle.BackColor=$script:UiColors.Bg
+    $toggle.BackColor=$global:MultiChatUiColors.Bg
     $toggle.Cursor=[Windows.Forms.Cursors]::Hand
     $toggle.Tag=[bool]$Checked
     $toggle.TabStop=$false
@@ -499,9 +505,9 @@ function New-ToggleSwitch {
         param($sender,$e)
         $e.Graphics.SmoothingMode=[Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $isChecked=[bool]$sender.Tag
-        $track=if($isChecked){$script:UiColors.Good}else{$script:UiColors.Surface3}
+        $track=if($isChecked){$global:MultiChatUiColors.Good}else{$global:MultiChatUiColors.Surface3}
         $trackBrush=New-Object Drawing.SolidBrush($track)
-        $knobBrush=New-Object Drawing.SolidBrush($script:UiColors.Text)
+        $knobBrush=New-Object Drawing.SolidBrush($global:MultiChatUiColors.Text)
         try{
             $trackHeight=18
             $trackY=2

@@ -11,7 +11,7 @@ foreach($name in @('git.exe','npx.cmd','powershell.exe')){
 foreach($required in @(
     'ChatMulti.psm1','ChatMulti.Advanced.ps1','ChatMulti.Hardening.ps1',
     'MultiChat-Tray.ps1','MultiChat.UI.ps1','MultiChat-Maintenance.ps1',
-    'Cleanup-Worktrees.ps1','Validate-ManagedSession.ps1','Invoke-ManagedExternal.ps1','HardeningTest.ps1',
+    'Cleanup-Worktrees.ps1','Validate-ManagedSession.ps1','Invoke-ManagedExternal.ps1','HardeningTest.ps1','CapacityTest.ps1',
     'Check-Updates.ps1','Update-MultiChat.ps1','Sign-ReleasePackage.ps1','Test-ReleaseSignature.ps1','Publish-Release.ps1',
     'RELEASE-PUBLIC-KEY.xml','config.json','PROMPT-FOR-CHATGPT.txt'
 )){
@@ -35,7 +35,7 @@ try{
     Import-Module (Join-Path $root 'ChatMulti.psm1') -Force -DisableNameChecking
     $cfg=Get-ChatConfig
 
-    if([int]$cfg.maxSlots -lt 2){$errors+='Invalid maxSlots value'}
+    if([int]$cfg.maxSlots -lt 2 -or [int]$cfg.maxSlots -gt 32){$errors+='Invalid maxSlots value'}
     if([int]$cfg.refreshSeconds -lt 1){$errors+='refreshSeconds is too low'}
     if([int]$cfg.maintenanceRefreshSeconds -lt 5){$errors+='maintenanceRefreshSeconds is too low'}
     if([int]$cfg.cleanupScanSeconds -lt 10){$errors+='cleanupScanSeconds is too low'}
@@ -124,7 +124,13 @@ try{
         }
     }
 
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'CapacityTest.ps1')
+    if($LASTEXITCODE -ne 0){
+        $errors+="CapacityTest.ps1 failed with exit code $LASTEXITCODE"
+    }
+
     $session=New-ManagedChatSession -Task 'PORTABLE-SELFTEST' -NoWorktree
+    Set-ManagedChatState -Status 'WORKING' -LastCommand 'SelfTest'
     if(-not $session.devPort){$errors+='No port was reserved'}
 
     $indexed=@(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck)
@@ -132,23 +138,45 @@ try{
         $errors+='Active-slot session index did not return the current session'
     }
 
-    if((Get-ChatColor 1) -eq (Get-ChatColor 2)){
-        $errors+='CHAT-1/2 colors are identical'
+    $consoleColors=@(1..12|ForEach-Object{Get-ChatColor $_})
+    if(@($consoleColors|Select-Object -Unique).Count -ne 12){
+        $errors+='CHAT-1..12 console colors are not distinct'
     }
 
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     . (Join-Path $root 'MultiChat.UI.ps1')
+    $uiColors=@(1..32|ForEach-Object{(Get-SlotColor $_).ToArgb()})
+    if(@($uiColors|Select-Object -Unique).Count -ne 32){
+        $errors+='CHAT-1..32 dashboard colors are not distinct'
+    }
     $gitView=Format-GitSummary ([pscustomobject]@{
         hasGit=$true;modified=2;untracked=3;ahead=1;behind=0
     })
     if($gitView.Text -ne '2 changed  3 new  ahead 1'){
         $errors+="Unexpected Git presentation: $($gitView.Text)"
     }
+    $subtitleFont=New-Object Drawing.Font('Segoe UI',9)
+    $connectionFont=New-Object Drawing.Font('Segoe UI Semibold',9)
+    try{
+        $subtitleWidth=[Windows.Forms.TextRenderer]::MeasureText('Parallel Desktop Commander sessions, without collisions.',$subtitleFont).Width
+        $connectionWidth=[Windows.Forms.TextRenderer]::MeasureText('Desktop Commander  CONNECTING',$connectionFont).Width
+        if($subtitleWidth -gt (900-36-508)){
+            $errors+="Header subtitle would overlap right-side controls at minimum width: $subtitleWidth px"
+        }
+        if((18+$connectionWidth) -gt 220){
+            $errors+="Desktop Commander status text would overlap its toggle: $connectionWidth px"
+        }
+    }finally{
+        $subtitleFont.Dispose()
+        $connectionFont.Dispose()
+    }
+
+    $expectedUiBg=[Drawing.Color]::FromArgb(14,16,20)
     $testForm=New-Object Windows.Forms.Form
     $testForm.FormBorderStyle='None'
     $testForm.Size=New-Object Drawing.Size(900,560)
-    $testForm.BackColor=$script:UiColors.Bg
+    $testForm.BackColor=$expectedUiBg
     if($testForm.FormBorderStyle -ne 'None'){
         $errors+='Borderless window mode is unavailable'
     }
@@ -187,7 +215,7 @@ try{
     if($connectionSwitch.GetType().FullName -ne 'System.Windows.Forms.Panel'){
         $errors+='Desktop Commander switch still uses a native button/checkbox control'
     }
-    if($connectionSwitch.BackColor -ne $script:UiColors.Bg){
+    if($connectionSwitch.BackColor -ne $expectedUiBg){
         $errors+='Desktop Commander switch background does not match the header'
     }
     if($gitView.ToolTip -notmatch 'not tracked by Git'){
@@ -276,6 +304,7 @@ try{
     Stop-ManagedChatSession
 }catch{
     $errors+=$_.Exception.Message
+    if($_.ScriptStackTrace){$errors+=("Stack: "+$_.ScriptStackTrace)}
 }
 
 if($errors.Count){

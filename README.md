@@ -4,7 +4,7 @@ A portable Windows coordination layer for running **multiple ChatGPT chats throu
 
 ChatGPT MultiChat reduces collisions between parallel chats by giving each managed chat its own session, slot, color, optional isolated Git worktree, development port, and shared-resource locks.
 
-> Current version: **v2.3.0**
+> Current version: **v2.4.0**
 
 ## Why it exists
 
@@ -24,7 +24,7 @@ MultiChat turns those independent shells into coordinated sessions.
 ChatGPT A ─┐
 ChatGPT B ─┼─> Start-McpChatSession.ps1
 ChatGPT C ─┘          │
-                      ├─ assigns CHAT-1 ... CHAT-8
+                      ├─ assigns CHAT-1 ... CHAT-N (configurable in the dashboard)
                       ├─ tracks status and activity
                       ├─ creates an isolated Git worktree/branch when appropriate
                       ├─ reserves a development port
@@ -36,7 +36,7 @@ Each chat should open **one persistent managed session** and reuse that same pro
 
 ## Main features
 
-- Up to **8 simultaneous managed chats**, each with a fixed slot color.
+- Configurable capacity from **2 to 32 simultaneous managed chats**, editable directly from the dashboard.
 - Isolated Git worktrees and branches for repository work.
 - Exact-base worktree creation with optional `BaseRef` + full `BaseSha` validation.
 - Optional declared `CanonicalRef` for fail-closed integration/cleanup checks.
@@ -57,6 +57,18 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - One-command signed release publishing for the maintainer.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+
+## What's new in v2.4.0
+
+- Added a dashboard chat-capacity selector: **CHATS [−] N [+]**.
+- Capacity can be changed live from **2 to 32 managed chats** without restarting MultiChat.
+- Clicking the capacity number opens presets for 4, 6, 8, 10, 12, 16, 20, 24, and 32 chats.
+- Reducing capacity is blocked when an active higher-numbered slot would fall outside the new range.
+- The active-chat metric updates immediately to the new capacity.
+- The core allocator now enforces the same 2–32 range even if `config.json` is edited manually.
+- Added 32 distinct dashboard slot colors and expanded console slot coloring.
+- Added `CapacityTest.ps1`, including 12-slot, 32-slot, overflow, and manual-config clamp validation.
+- UI theme helpers now use an explicitly shared theme so visual components remain reliable when loaded by tests or auxiliary scripts.
 
 ## What's new in v2.3.0
 
@@ -123,7 +135,7 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - Git summaries, session expiry, liveness validation, and Desktop Commander health checks run in a hidden maintenance worker instead of the UI thread.
 - Grid cells are updated only when their displayed value changes.
 - Expensive Git checks are avoided during ordinary one-second status refreshes.
-- The dashboard reads active sessions through the eight slot files instead of scanning the full session history on every refresh.
+- The dashboard reads active sessions through indexed slot files instead of scanning the full session history on every refresh.
 - Session/project registry handling is more defensive against malformed stale entries.
 - UI helpers are isolated in `MultiChat.UI.ps1`, while performance-sensitive runtime logic is consolidated in `ChatMulti.Advanced.ps1`.
 
@@ -203,7 +215,7 @@ The dashboard shows one row per active managed chat:
 
 | Field | Meaning |
 |---|---|
-| Chat | Assigned slot (`CHAT-1` ... `CHAT-8`) |
+| Chat | Assigned slot (`CHAT-1` ... `CHAT-N`, according to the configured capacity) |
 | Project | Associated project |
 | Activity | `FREE`, `WORKING`, or `ABANDONED` |
 | Detail | Detected command/activity type |
@@ -212,6 +224,8 @@ The dashboard shows one row per active managed chat:
 | Port | Development port reserved for the session |
 | Task | Task description supplied when the session started |
 | Warning | Conflicts or conditions that need attention |
+
+The header includes a live **CHATS** capacity control. Use **− / +** for one-step changes or click the number for common presets. New sessions immediately use the new limit. MultiChat refuses reductions that would exclude an active higher-numbered slot.
 
 Closing the dashboard window does **not** stop the agent. It remains in the Windows system tray. Use **Exit** from the tray menu to stop it completely.
 
@@ -347,7 +361,7 @@ The main settings live in `config.json`:
 
 | Setting | Default | Purpose |
 |---|---:|---|
-| `maxSlots` | 8 | Maximum simultaneous managed chats |
+| `maxSlots` | 8 | Maximum simultaneous managed chats; dashboard selector supports 2–32 |
 | `checkForUpdates` | true | Check GitHub Releases for newer MultiChat versions |
 | `updateCheckHours` | 24 | Minimum interval between successful release checks |
 | `updateChannel` | stable | Release channel: `stable` or `beta` |
@@ -422,6 +436,7 @@ This runs the self-test, builds the portable ZIP, creates the SHA-256 file, sign
 | `Validate-ManagedSession.ps1` | Post-execution workspace/base/lease validator |
 | `Invoke-ManagedExternal.ps1` | Long-running external-process wrapper with lease heartbeat and resource retention |
 | `HardeningTest.ps1` | Concurrency, exact-base, lease, and cleanup safety test suite |
+| `CapacityTest.ps1` | Isolated dynamic-capacity validation for 12/32 slots and overflow clamps |
 | `Show-History.ps1` | Session-history viewer |
 | `Make-Portable-Package.ps1` | Builds the portable release ZIP |
 
@@ -451,7 +466,7 @@ The project uses paths relative to its own folder.
 To build a package:
 
 ```powershell
-.\Make-Portable-Package.ps1 -Version "2.3.0"
+.\Make-Portable-Package.ps1 -Version "2.4.0"
 ```
 
 ## Limitations

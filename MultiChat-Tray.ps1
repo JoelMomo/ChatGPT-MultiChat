@@ -146,6 +146,59 @@ function Set-ConfigProperty {
     }
 }
 
+function Get-ChatCapacity {
+    try{$value=[int](Get-ChatConfig).maxSlots}catch{$value=8}
+    if($value -lt 2){$value=2}
+    if($value -gt 32){$value=32}
+    return $value
+}
+
+function Get-HighestActiveSlot {
+    $highest=0
+    foreach($session in @(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck)){
+        $slot=[int](Get-ChatProp $session 'slot' 0)
+        if($slot -gt $highest){$highest=$slot}
+    }
+    return $highest
+}
+
+function Update-CapacityUi {
+    if(-not $capacityValueButton){return}
+    $value=Get-ChatCapacity
+    if($capacityValueButton.Text -ne [string]$value){$capacityValueButton.Text=[string]$value}
+    $highest=Get-HighestActiveSlot
+    $capacityMinusButton.Enabled=($value -gt [Math]::Max(2,$highest))
+    $capacityPlusButton.Enabled=($value -lt 32)
+    $capacityToolTip.SetToolTip(
+        $capacityValueButton,
+        ("Maximum managed chat sessions: {0}. Click for presets." -f $value)
+    )
+}
+
+function Set-ChatCapacity {
+    param([Parameter(Mandatory)][int]$Value)
+
+    if($Value -lt 2 -or $Value -gt 32){
+        Show-MultiChatInfo -Owner $form -Title 'Invalid chat capacity' -Message 'Chat capacity must be between 2 and 32.'
+        return $false
+    }
+
+    $highest=Get-HighestActiveSlot
+    if($highest -gt $Value){
+        Show-MultiChatInfo -Owner $form -Title 'Capacity is in use' -Message ("CHAT-{0} is currently active. Close higher-numbered sessions before reducing capacity below {0}." -f $highest)
+        return $false
+    }
+
+    if(-not(Set-ConfigProperty -Name 'maxSlots' -Value $Value)){
+        Show-MultiChatInfo -Owner $form -Title 'Could not save capacity' -Message 'MultiChat could not update config.json.'
+        return $false
+    }
+
+    Update-CapacityUi
+    Refresh-Dashboard
+    return $true
+}
+
 function Get-UpdateChannel {
     $channel=[string](Get-ChatProp $cfg 'updateChannel' 'stable')
     if($channel -notin @('stable','beta')){$channel='stable'}
@@ -577,7 +630,7 @@ function Refresh-Dashboard {
     }
 
     Set-MetricCard $dcCard $dc $dcTone
-    Set-MetricCard $chatCard "$($sessions.Count)/$($cfg.maxSlots)" 'Neutral'
+    Set-MetricCard $chatCard "$($sessions.Count)/$(Get-ChatCapacity)" 'Neutral'
     Set-MetricCard $workCard "$working" $(if($working){'Warn'}else{'Good'})
     Set-MetricCard $treeCard "$($script:cachedSafe) safe / $($script:cachedPending) pending" $(if($script:cachedPending){'Warn'}else{'Good'})
 
@@ -606,6 +659,7 @@ function Refresh-Dashboard {
 
     $notify.Text=("MultiChat: {0} chats | {1} working" -f $sessions.Count,$working)
     Update-UpdateUi
+    Update-CapacityUi
     Update-History
 }
 
@@ -645,14 +699,14 @@ $header.Controls.Add($subtitle)
 
 $rightHeader=New-Object Windows.Forms.Panel
 $rightHeader.Dock='Right'
-$rightHeader.Width=390
+$rightHeader.Width=508
 $rightHeader.Height=38
 $rightHeader.BackColor=$script:UiColors.Bg
 $header.Controls.Add($rightHeader)
 
 $connectionPanel=New-Object Windows.Forms.Panel
 $connectionPanel.Location=New-Object Drawing.Point(0,0)
-$connectionPanel.Size=New-Object Drawing.Size(310,36)
+$connectionPanel.Size=New-Object Drawing.Size(270,36)
 $connectionPanel.BackColor=$script:UiColors.Bg
 $rightHeader.Controls.Add($connectionPanel)
 
@@ -667,14 +721,58 @@ $connectionLabel.Location=New-Object Drawing.Point(18,8)
 $connectionPanel.Controls.Add($connectionLabel)
 
 $connectionToggle=New-ToggleSwitch -Checked $true
-$connectionToggle.Location=New-Object Drawing.Point(260,7)
+$connectionToggle.Location=New-Object Drawing.Point(220,7)
 $connectionPanel.Controls.Add($connectionToggle)
 
 $connectionToolTip=New-Object Windows.Forms.ToolTip
 $connectionToolTip.SetToolTip($connectionToggle,'Enable or disable Desktop Commander')
 
+$capacityPanel=New-Object Windows.Forms.Panel
+$capacityPanel.Location=New-Object Drawing.Point(274,0)
+$capacityPanel.Size=New-Object Drawing.Size(154,36)
+$capacityPanel.BackColor=$script:UiColors.Bg
+$rightHeader.Controls.Add($capacityPanel)
+
+$capacityLabel=New-Object Windows.Forms.Label
+$capacityLabel.Text='CHATS'
+$capacityLabel.AutoSize=$true
+$capacityLabel.Font=New-Object Drawing.Font('Segoe UI Semibold',7.5)
+$capacityLabel.ForeColor=$script:UiColors.Muted
+$capacityLabel.Location=New-Object Drawing.Point(0,11)
+$capacityPanel.Controls.Add($capacityLabel)
+
+$capacityMinusButton=New-FlatButton -Text ([char]0x2212) -Width 28
+$capacityMinusButton.Height=30
+$capacityMinusButton.Location=New-Object Drawing.Point(40,3)
+$capacityPanel.Controls.Add($capacityMinusButton)
+
+$capacityValueButton=New-FlatButton -Text ([string](Get-ChatCapacity)) -Width 38
+$capacityValueButton.Height=30
+$capacityValueButton.Font=New-Object Drawing.Font('Segoe UI Semibold',9)
+$capacityValueButton.Location=New-Object Drawing.Point(72,3)
+$capacityPanel.Controls.Add($capacityValueButton)
+
+$capacityPlusButton=New-FlatButton -Text '+' -Width 28
+$capacityPlusButton.Height=30
+$capacityPlusButton.Location=New-Object Drawing.Point(114,3)
+$capacityPanel.Controls.Add($capacityPlusButton)
+
+$capacityToolTip=New-Object Windows.Forms.ToolTip
+$capacityToolTip.SetToolTip($capacityMinusButton,'Reduce managed chat capacity')
+$capacityToolTip.SetToolTip($capacityPlusButton,'Increase managed chat capacity')
+
+$capacityMenu=New-Object Windows.Forms.ContextMenuStrip
+foreach($preset in @(4,6,8,10,12,16,20,24,32)){
+    $item=$capacityMenu.Items.Add([string]$preset)
+    $item.Tag=$preset
+    $item.Add_Click({
+        param($sender,$eventArgs)
+        [void](Set-ChatCapacity -Value ([int]$sender.Tag))
+    })
+}
+
 $windowControls=New-Object Windows.Forms.Panel
-$windowControls.Location=New-Object Drawing.Point(314,0)
+$windowControls.Location=New-Object Drawing.Point(432,0)
 $windowControls.Size=New-Object Drawing.Size(76,36)
 $windowControls.BackColor=$script:UiColors.Bg
 $rightHeader.Controls.Add($windowControls)
@@ -696,6 +794,20 @@ $connectionToggle.Add_Click({
     Set-DesktopCommanderEnabled -Enabled $next
     Refresh-Dashboard
 })
+
+$capacityMinusButton.Add_Click({
+    [void](Set-ChatCapacity -Value ((Get-ChatCapacity)-1))
+})
+$capacityPlusButton.Add_Click({
+    [void](Set-ChatCapacity -Value ((Get-ChatCapacity)+1))
+})
+$capacityValueButton.Add_Click({
+    $capacityMenu.Show(
+        $capacityValueButton,
+        (New-Object Drawing.Point(0,$capacityValueButton.Height))
+    )
+})
+Update-CapacityUi
 
 Enable-WindowDrag -Control $header -Form $form
 Enable-WindowDrag -Control $title -Form $form
