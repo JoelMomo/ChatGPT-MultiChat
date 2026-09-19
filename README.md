@@ -57,6 +57,7 @@ Each chat should open **one persistent managed session** and reuse that same pro
 - One-command signed release publishing for the maintainer.
 - No automatic Windows startup.
 - Portable package with no machine-specific paths or runtime state.
+- Optional **Restricted Remote** mode that runs Remote Desktop Commander under a dedicated standard Windows identity instead of the signed-in user.
 
 ## Screenshots
 
@@ -175,10 +176,50 @@ The screenshots above were captured from the portable build in an isolated Windo
 1. Download the portable ZIP from the latest GitHub release.
 2. Extract it to a permanent folder.
 3. Run `Setup.cmd`.
-4. A **ChatGPT MultiChat Agent** shortcut is created on the desktop.
-5. Open the agent before starting parallel Desktop Commander work.
+4. A versioned **ChatGPT MultiChat** shortcut is created on the desktop.
+5. Open MultiChat before starting parallel Desktop Commander work.
 
 `Setup.cmd` does **not** configure automatic startup.
+
+## Optional strong isolation: Restricted Remote
+
+Normal Remote Desktop Commander runs with the signed-in Windows user's permissions. MultiChat can optionally replace that execution identity with a dedicated local standard account named `MultiChatRemote`.
+
+Restricted Remote is intended for users who want a stronger boundary against a malicious or compromised remote AI session. It is **opt-in** because initial setup requires one UAC elevation and some development tools may need separate configuration for the restricted identity.
+
+Prepare the isolated identity from the MultiChat folder:
+
+```powershell
+.\Install-RestrictedRemote.ps1
+```
+
+The installer uses dynamic Windows profile/SID paths, verifies the reviewed Desktop Commander `0.2.51` runtime, creates a random credential protected with the interactive user's DPAPI, and grants the restricted identity read-only access to approved Git metadata. Normal repository working trees are not made writable. Restricted jobs use their own Git clones and their own state/workspace tree.
+
+Before enabling the mode, finish or close normal managed sessions. Then run:
+
+```powershell
+.\Activate-RestrictedRemote.ps1
+```
+
+Activation transfers the existing Remote Desktop Commander authorization to the restricted profile and removes it from the interactive user's profile. Reopen MultiChat and turn Desktop Commander **On** locally.
+
+In Restricted Remote mode:
+
+- the remote process runs as a dedicated non-administrator Windows identity;
+- the interactive user's DPAPI store, browser profile, Startup folder, HKCU persistence locations, and unrelated personal files are outside that identity's normal access boundary;
+- canonical Git metadata is read-only and each managed task works in an isolated shared clone;
+- restricted session state/workspaces are separate from normal MultiChat state;
+- no GitHub credentials are copied automatically;
+- finished restricted commits must be imported explicitly for review with `Import-RestrictedRemoteChanges.ps1`; nothing is merged automatically;
+- the emergency disconnect still revokes authorization and kills the contained process tree.
+
+To remove the mode and its dedicated Windows account:
+
+```powershell
+.\Uninstall-RestrictedRemote.ps1
+```
+
+Remote access remains Off after removal until it is explicitly enabled again. Moving the portable MultiChat folder intentionally invalidates an existing Restricted Remote configuration; rerun the installer from the new location rather than silently reusing stale ACL/path assumptions.
 
 ## Using it with ChatGPT
 
@@ -452,6 +493,11 @@ This runs the self-test, builds the portable ZIP, creates the SHA-256 file, sign
 | `SecretScan.ps1` | High-confidence credential scan for tracked files, with optional Git-history scanning |
 | `Harden-DesktopCommander.ps1` | Restricts local Desktop Commander state ACLs and disables telemetry |
 | `Emergency-Stop-DesktopCommander.ps1` | Immediately stops remote access, revokes the current server-side device/session when possible, removes local authorization, and supports non-destructive `-DryRun` validation |
+| `Install-RestrictedRemote.ps1` / `Activate-RestrictedRemote.ps1` | Prepare and enable the optional dedicated standard-user containment mode |
+| `RestrictedRemote.psm1` / `RestrictedRemote-Launcher.ps1` / `RestrictedRemote-Child.ps1` | Restricted Remote configuration, credential handling, process containment, and isolated child environment |
+| `Import-RestrictedRemoteChanges.ps1` | Imports a finished restricted-session commit into a new local review branch without merging it |
+| `Uninstall-RestrictedRemote.ps1` | Revokes/removes the restricted identity and its ACL grants while leaving remote access Off |
+| `RestrictedRemoteTest.ps1` / `PortabilityTest.ps1` | Isolation and machine-independent path validation |
 | `SECURITY-AUDIT.md` | Threat model, adversarial capability results, implemented mitigations, and residual-risk analysis |
 | `MultiChat-Tray.ps1` | Lightweight dashboard orchestration and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
@@ -508,14 +554,17 @@ To build a package:
 
 MultiChat coordinates processes that **use the MultiChat session system**. It cannot prevent an unrelated terminal, another application, or a chat that ignores the manager from directly editing the same repository or using the same external resource.
 
+Normal Remote Desktop Commander mode still executes as the interactive Windows user. `allowedDirectories` and command rules are guardrails, not an OS sandbox. Restricted Remote materially reduces this same-user exposure, but it can still read the approved project history/files made available to it and can send readable data over its required outbound network connection.
+
 The key rule is therefore:
 
 **one chat → one persistent managed session → one reused PID for the entire task.**
 
 ## Uninstall
 
-1. Exit the agent from the system-tray icon.
-2. Delete the desktop shortcut.
-3. Delete the ChatGPT MultiChat folder.
+1. If Restricted Remote was installed, run `Uninstall-RestrictedRemote.ps1` first so its local account, authorization, and ACL grants are removed cleanly.
+2. Exit the agent from the system-tray icon.
+3. Delete the desktop shortcut.
+4. Delete the ChatGPT MultiChat folder.
 
 No Windows service or automatic-start entry is installed.

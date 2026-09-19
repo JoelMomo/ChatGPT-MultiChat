@@ -57,6 +57,8 @@ The audit also verified, without extracting secret values, that browser login/co
 - Exiting MultiChat stops Remote Desktop Commander rather than leaving the remote agent behind.
 - `SecurityTest.ps1` validates the security-critical configuration and local ACL state.
 - The managed-chat prompt explicitly treats repository files, web content, issues, logs, terminal output, and downloaded artifacts as untrusted data and forbids external content from authorizing security-sensitive actions.
+- Optional **Restricted Remote** containment runs Remote Desktop Commander under a dedicated local standard Windows identity with a separate DPAPI/profile boundary, read-only access to approved canonical Git metadata, isolated shared-clone workspaces, a kill-on-close job object, a clean child environment, and explicit review-branch import instead of direct canonical-repository writes.
+- Restricted Remote installation is path/SID driven rather than machine-name/user-profile hard-coded, and `PortabilityTest.ps1` rejects executable scripts containing machine-specific user-profile paths or the current computer name.
 
 The three exposure controls above can be overridden by adding these optional settings to `config.json`:
 
@@ -72,12 +74,16 @@ The values shown are the secure defaults used when the properties are absent.
 
 ## Residual risk
 
-Remote Desktop Commander still runs as the interactive Windows user. Therefore a correctly authorized but hostile AI can potentially read, alter, delete, or exfiltrate data that the user account can access and can use user-level persistence mechanisms. Browser credential stores, CurrentUser DPAPI material, Windows Credential Manager entries, and application keyrings are part of this same-user risk surface.
+In normal mode, Remote Desktop Commander still runs as the interactive Windows user. Therefore a correctly authorized but hostile AI can potentially read, alter, delete, or exfiltrate data that the user account can access and can use user-level persistence mechanisms. Browser credential stores, CurrentUser DPAPI material, Windows Credential Manager entries, and application keyrings are part of this same-user risk surface.
 
 Command blocklists, path allowlists, MultiChat leases, and worktree rules are useful guardrails but are not a containment boundary against a deliberately hostile process running as the same Windows identity. In particular, `allowedDirectories` protects Desktop Commander's direct filesystem tools, but terminal commands still execute with the Windows user's permissions.
 
-## Strong containment target
+Restricted Remote materially reduces that same-user risk by moving the remote process to a separate standard-user token/profile. It is not a guarantee against every compromise: the restricted identity can still read the approved Git history and isolated task workspace, can execute user-level code as that restricted identity, and requires outbound network access for the Remote Desktop Commander control channel. Data intentionally exposed to a restricted task can therefore still be exfiltrated by a malicious authorized remote actor.
 
-The next security tier is to run Remote Desktop Commander under a dedicated standard Windows identity with explicit NTFS access only to approved project roots and device resources. That would separate the AI's filesystem and DPAPI/credential boundary from the interactive user.
+## Strong containment mode
 
-This stronger mode should be introduced as an opt-in compatibility-tested mode because Git credentials, Android authorization, repository paths, and other development tooling may need dedicated configuration for the restricted identity.
+`Install-RestrictedRemote.ps1` and `Activate-RestrictedRemote.ps1` implement the stronger tier as an opt-in mode. The installer creates a dedicated local standard account with a random credential protected by the interactive user's DPAPI, grants only the project/runtime access needed for contained operation, and keeps canonical Git metadata read-only. Restricted managed sessions use independent shared clones so new Git refs/objects and file edits stay outside the canonical repository until explicitly imported into a local review branch.
+
+The launcher uses `-UseNewEnvironment`, a separate Windows profile, and a kill-on-close job object. The restricted child disables interactive Git credential prompting and uses dedicated MultiChat state/workspace roots. Emergency stop and uninstall paths revoke/remove the restricted authorization when possible.
+
+The mode remains opt-in because initial setup requires administrator approval and tools such as GitHub authentication, Android device authorization, SDKs, or private package managers may need separate configuration for the restricted identity. Moving the portable MultiChat folder invalidates the previous restricted configuration rather than silently trusting stale path assumptions.

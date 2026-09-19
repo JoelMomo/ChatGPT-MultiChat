@@ -125,7 +125,15 @@ function Get-ManagedWorktreeIdentity {
     $branch=[string](Get-ChatProp $Session 'branch' '')
     $workspaceKind=[string](Get-ChatProp $Session 'workspaceKind' '')
     if (-not $workspaceKind) {
-        $workspaceKind=if([bool](Get-ChatProp $Session 'isolated' $false)){'worktree'}else{'direct'}
+        if([bool](Get-ChatProp $Session 'isolated' $false)){
+            $workspaceKind='worktree'
+        }elseif($workspace -and $originRepo -and -not(Test-ChatPathEqual $workspace $originRepo)){
+            # Revalidation candidates may omit the original isolated property.
+            # Legacy worktrees are still distinguishable from direct sessions by path.
+            $workspaceKind='worktree'
+        }else{
+            $workspaceKind='direct'
+        }
     }
     if (-not $workspace -or -not $originRepo -or -not (Test-Path -LiteralPath $workspace) -or -not (Test-Path -LiteralPath $originRepo)) {
         return [pscustomobject]@{Valid=$false;Reason='WORKSPACE_MISSING';Head='';Branch=''}
