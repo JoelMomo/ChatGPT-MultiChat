@@ -43,7 +43,7 @@ The DPAPI result is important: a fully malicious but correctly authorized remote
 - Local Desktop Commander telemetry is disabled.
 - Remote authorization and Desktop Commander local state are protected by restrictive ACLs.
 - Dashboard ONLINE state requires a persisted authorization record plus an established Remote Desktop Commander HTTPS connection.
-- An emergency disconnect stops Remote Desktop Commander and removes its local authorization.
+- An emergency disconnect stops Remote Desktop Commander, revokes the current server-side device row and authentication session when possible, removes local authorization, and records only non-secret result metadata.
 - Remote access disconnects when Windows is locked by default.
 - Remote access disconnects after 30 minutes with no managed chats by default.
 - Sensitive Desktop Commander local tool history is purged when remote access is stopped by default.

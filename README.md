@@ -449,7 +449,7 @@ This runs the self-test, builds the portable ZIP, creates the SHA-256 file, sign
 | `SecurityTest.ps1` | Static and runtime checks for Remote Desktop Commander hardening, ACLs, authorization storage, and secure defaults |
 | `SecretScan.ps1` | High-confidence credential scan for tracked files, with optional Git-history scanning |
 | `Harden-DesktopCommander.ps1` | Restricts local Desktop Commander state ACLs and disables telemetry |
-| `Emergency-Stop-DesktopCommander.ps1` | Immediately stops remote access and removes saved local authorization |
+| `Emergency-Stop-DesktopCommander.ps1` | Immediately stops remote access, revokes the current server-side device/session when possible, removes local authorization, and supports non-destructive `-DryRun` validation |
 | `SECURITY-AUDIT.md` | Threat model, adversarial capability results, implemented mitigations, and residual-risk analysis |
 | `MultiChat-Tray.ps1` | Lightweight dashboard orchestration and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |

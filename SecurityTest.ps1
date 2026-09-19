@@ -58,6 +58,22 @@ if(Test-Path -LiteralPath $trayPath){
     }
 }
 
+if(Test-Path -LiteralPath $emergencyPath){
+    $emergency=[IO.File]::ReadAllText($emergencyPath)
+    if($emergency -notmatch '/rest/v1/mcp_devices'){
+        Add-Failure 'Emergency stop does not revoke the server-side device row'
+    }
+    if($emergency -notmatch '/auth/v1/logout\?scope=local'){
+        Add-Failure 'Emergency stop does not revoke the Remote Commander authentication session'
+    }
+    if($emergency -notmatch '\[switch\]\$DryRun'){
+        Add-Failure 'Emergency stop has no non-destructive dry-run mode'
+    }
+    if($emergency -notmatch 'emergency-stop-last-result\.json'){
+        Add-Failure 'Emergency stop does not record a safe revocation result'
+    }
+}
+
 if(Test-Path -LiteralPath $promptPath){
     $prompt=[IO.File]::ReadAllText($promptPath)
     if($prompt -notmatch 'untrusted data' -or $prompt -notmatch "Only the user's instructions"){
@@ -91,6 +107,11 @@ if(Test-Path -LiteralPath $maintenancePath){
 }
 
 if($Runtime){
+    $dryRunOutput=@(& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $emergencyPath -DryRun 2>&1)
+    if($LASTEXITCODE -ne 0 -or -not(($dryRunOutput -join "`n") -match 'Emergency-stop dry run')){
+        Add-Failure 'Emergency-stop dry run failed'
+    }
+
     $configDir=Join-Path $env:USERPROFILE '.claude-server-commander'
     $remoteDir=Join-Path $env:USERPROFILE '.desktop-commander-device'
     $deviceFile=Join-Path $remoteDir 'device.json'

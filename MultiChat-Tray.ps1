@@ -228,17 +228,25 @@ function Apply-RemoteExposurePolicy {
 function Invoke-DesktopCommanderEmergencyStop {
     param([switch]$ForgetRemoteSession)
 
-    New-Item -ItemType Directory -Path $stateCacheRoot -Force|Out-Null
-    [IO.File]::WriteAllText(
-        $script:remoteCommanderKillSwitch,
-        ((Get-Date).ToString('o')+"`r`n"),
-        (New-Object Text.UTF8Encoding($false))
-    )
     $script:dcDesiredOnline=$false
-    Stop-RemoteCommander
-    if($ForgetRemoteSession){
-        Remove-Item -LiteralPath (Join-Path $env:USERPROFILE '.desktop-commander-device\device.json') -Force -ErrorAction SilentlyContinue
+    $emergencyScript=Join-Path $root 'Emergency-Stop-DesktopCommander.ps1'
+    if(Test-Path -LiteralPath $emergencyScript){
+        $args=@('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$emergencyScript)
+        if(-not $ForgetRemoteSession){
+            $args+='-KeepLocalAuthorization'
+            $args+='-SkipServerRevocation'
+        }
+        try{
+            $proc=Start-Process powershell.exe -ArgumentList $args -WindowStyle Hidden -PassThru
+            $proc.WaitForExit(30000)|Out-Null
+            $proc.Dispose()
+        }catch{
+            Stop-RemoteCommander
+        }
+    }else{
+        Stop-RemoteCommander
     }
+
     $script:dcOnline=$false
     $script:dcChecked=$true
     $script:dcConnecting=$false
@@ -1144,7 +1152,7 @@ $miHide.Add_Click({$form.Hide()})
 $miFolder.Add_Click({Start-Process explorer.exe -ArgumentList $root})
 $miRestart.Add_Click({Restart-RemoteCommander})
 $miEmergency.Add_Click({
-    $ok=Show-MultiChatConfirm -Owner $form -Title 'Emergency disconnect?' -Message 'This immediately stops Desktop Commander remote access and removes its saved local authorization. Reconnecting will require authorization again.'
+    $ok=Show-MultiChatConfirm -Owner $form -Title 'Emergency disconnect?' -Message 'This immediately stops Desktop Commander, revokes the current Remote Commander device/session when possible, and removes local authorization. Reconnecting will require authorization again.'
     if($ok){
         Invoke-DesktopCommanderEmergencyStop -ForgetRemoteSession
         try{$notify.ShowBalloonTip(3000,'Desktop Commander disconnected','Remote access is stopped and local authorization was removed.','Warning')}catch{}
