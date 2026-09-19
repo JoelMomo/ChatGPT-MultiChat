@@ -400,6 +400,11 @@ The main settings live in `config.json`:
 | `portRangeStart` | 3000 | First reservable development port |
 | `portRangeCount` | 100 | Number of ports in the reservation pool |
 | `historyLimit` | 50 | Maximum stored history entries |
+| `remoteDisconnectOnLock` | true | Stop Remote Desktop Commander when Windows is locked |
+| `remoteIdleDisconnectMinutes` | 30 | Stop Remote Desktop Commander after this many minutes with no managed chats; `0` disables the idle cutoff |
+| `remotePurgeHistoryOnDisconnect` | true | Remove local Desktop Commander tool-history files whenever remote access is stopped |
+
+The three remote-security values above are secure code defaults even when the properties are absent from an older `config.json`.
 
 Additional static resource-lock rules are defined in `config.json`. Android serial and AVD identities are resolved dynamically by MultiChat.
 
@@ -441,6 +446,11 @@ This runs the self-test, builds the portable ZIP, creates the SHA-256 file, sign
 | `ChatMulti.psm1` | Session-management core and module loader |
 | `ChatMulti.Advanced.ps1` | Configuration cache, ports, history, project resolution, Git/status, cleanup, idle-state, conflicts, and reservations |
 | `ChatMulti.Hardening.ps1` | Exact-base validation, dynamic resource identities, leases, worktree identity, canonical integration checks, and fail-closed validation |
+| `SecurityTest.ps1` | Static and runtime checks for Remote Desktop Commander hardening, ACLs, authorization storage, and secure defaults |
+| `SecretScan.ps1` | High-confidence credential scan for tracked files, with optional Git-history scanning |
+| `Harden-DesktopCommander.ps1` | Restricts local Desktop Commander state ACLs and disables telemetry |
+| `Emergency-Stop-DesktopCommander.ps1` | Immediately stops remote access and removes saved local authorization |
+| `SECURITY-AUDIT.md` | Threat model, adversarial capability results, implemented mitigations, and residual-risk analysis |
 | `MultiChat-Tray.ps1` | Lightweight dashboard orchestration and system-tray agent |
 | `MultiChat.UI.ps1` | Reusable WinForms styling and UI helpers |
 | `MultiChat-Maintenance.ps1` | Background Git, expiry, liveness, and Desktop Commander maintenance worker |

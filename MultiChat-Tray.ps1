@@ -31,6 +31,9 @@ $script:dcChecked=$false
 $script:dcDesiredOnline=$true
 $script:dcConnecting=$true
 $script:suppressConnectionToggle=$false
+$script:lastActiveChatAt=Get-Date
+$script:remoteIdleNoticeShown=$false
+$script:remoteLockedOff=$false
 $script:gitCache=@{}
 $script:cleanupCandidates=@()
 $script:cachedSafe=0
@@ -127,10 +130,23 @@ function Start-RemoteCommanderHidden {
     return $true
 }
 
+function Clear-RemoteCommanderSensitiveHistory {
+    if(-not [bool](Get-ChatProp $cfg 'remotePurgeHistoryOnDisconnect' $true)){return}
+    $historyRoot=Join-Path $env:USERPROFILE '.claude-server-commander'
+    if(-not(Test-Path -LiteralPath $historyRoot)){return}
+    foreach($file in @(Get-ChildItem -LiteralPath $historyRoot -File -Force -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like 'claude_tool_call*.log' -or $_.Name -like 'tool-history*.jsonl'
+    })){
+        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Stop-RemoteCommander {
     foreach($proc in @(Get-RemoteCommanderProcess)){
         Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
     }
+    Start-Sleep -Milliseconds 150
+    Clear-RemoteCommanderSensitiveHistory
     $script:dcOnline=$false
     $script:dcChecked=$true
     $script:dcConnecting=$false
@@ -145,6 +161,11 @@ function Set-DesktopCommanderEnabled {
 
     if($Enabled -and (Test-RemoteCommanderEmergencyStop)){
         Remove-Item -LiteralPath $script:remoteCommanderKillSwitch -Force -ErrorAction SilentlyContinue
+    }
+    if($Enabled){
+        $script:lastActiveChatAt=Get-Date
+        $script:remoteIdleNoticeShown=$false
+        $script:remoteLockedOff=$false
     }
     $script:dcDesiredOnline=$Enabled
     if(-not $Enabled){
@@ -170,6 +191,38 @@ function Restart-RemoteCommander {
     if($connectionToggle){Set-ToggleSwitchChecked -Toggle $connectionToggle -Checked $true}
     $script:suppressConnectionToggle=$false
     Set-DesktopCommanderEnabled -Enabled $true -ForceRestart
+}
+
+function Test-WorkstationLocked {
+    try{return [bool](Get-Process LogonUI -ErrorAction SilentlyContinue)}catch{return $false}
+}
+
+function Apply-RemoteExposurePolicy {
+    param([Parameter(Mandatory)][array]$Sessions)
+
+    if([bool](Get-ChatProp $cfg 'remoteDisconnectOnLock' $true) -and (Test-WorkstationLocked)){
+        if($script:dcDesiredOnline -or @(Get-RemoteCommanderProcess).Count -gt 0){
+            $script:remoteLockedOff=$true
+            Set-DesktopCommanderEnabled -Enabled $false
+        }
+        return
+    }
+
+    if($Sessions.Count -gt 0){
+        $script:lastActiveChatAt=Get-Date
+        $script:remoteIdleNoticeShown=$false
+        return
+    }
+
+    $minutes=[int](Get-ChatProp $cfg 'remoteIdleDisconnectMinutes' 30)
+    if($minutes -le 0 -or -not $script:dcDesiredOnline){return}
+    if(((Get-Date)-$script:lastActiveChatAt).TotalMinutes -lt $minutes){return}
+
+    Set-DesktopCommanderEnabled -Enabled $false
+    if(-not $script:remoteIdleNoticeShown){
+        $script:remoteIdleNoticeShown=$true
+        try{$notify.ShowBalloonTip(3500,'Desktop Commander disconnected',("No managed chats were active for {0} minutes. Remote access was turned off." -f $minutes),'Info')}catch{}
+    }
 }
 
 function Invoke-DesktopCommanderEmergencyStop {
@@ -403,6 +456,7 @@ function Start-SelfUpdate {
     Start-Process powershell.exe -WorkingDirectory $env:TEMP -ArgumentList $args -WindowStyle Hidden|Out-Null
 
     $script:exiting=$true
+    Stop-RemoteCommander
     if($script:maintenanceProcess -and -not $script:maintenanceProcess.HasExited){$script:maintenanceProcess.Kill()}
     if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){$script:cleanupScanProcess.Kill()}
     if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){$script:cleanupProcess.Kill()}
@@ -667,6 +721,7 @@ function Refresh-Dashboard {
     }
 
     $sessions=@(Get-ManagedChatSessions -ActiveOnly -SkipLivenessCheck|Sort-Object slot)
+    Apply-RemoteExposurePolicy -Sessions $sessions
     if($script:dcDesiredOnline -and $script:dcChecked -and -not $script:dcOnline -and (($now-$script:lastRemoteRestart).TotalSeconds -ge 10)){
         [void](Start-RemoteCommanderHidden)
     }
@@ -793,7 +848,7 @@ $connectionToggle.Location=New-Object Drawing.Point(220,7)
 $connectionPanel.Controls.Add($connectionToggle)
 
 $connectionToolTip=New-Object Windows.Forms.ToolTip
-$connectionToolTip.SetToolTip($connectionToggle,'Enable or disable Desktop Commander')
+$connectionToolTip.SetToolTip($connectionToggle,'Enable or disable Desktop Commander. Security defaults: disconnect on Windows lock and after 30 minutes without managed chats.')
 
 $capacityPanel=New-Object Windows.Forms.Panel
 $capacityPanel.Location=New-Object Drawing.Point(274,0)
@@ -1144,6 +1199,7 @@ $form.Add_FormClosing({
 
 $miExit.Add_Click({
     $script:exiting=$true
+    Stop-RemoteCommander
     if($script:maintenanceProcess -and -not $script:maintenanceProcess.HasExited){$script:maintenanceProcess.Kill()}
     if($script:cleanupScanProcess -and -not $script:cleanupScanProcess.HasExited){$script:cleanupScanProcess.Kill()}
     if($script:cleanupProcess -and -not $script:cleanupProcess.HasExited){$script:cleanupProcess.Kill()}
@@ -1167,6 +1223,7 @@ $timer.Start()
 if(-not $StartHidden){$form.Show()}
 [Windows.Forms.Application]::Run()
 
+Stop-RemoteCommander
 $notify.Visible=$false
 $mutex.ReleaseMutex()
 $mutex.Dispose()

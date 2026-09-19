@@ -12,3 +12,15 @@ dist/
 *.log
 Thumbs.db
 Desktop.ini
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+*.pfx
+*.p12
+*.secrets.json
+Configure-ThorGitHubSigningSecrets.ps1

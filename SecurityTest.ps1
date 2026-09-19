@@ -15,8 +15,9 @@ $trayPath=Join-Path $root 'MultiChat-Tray.ps1'
 $maintenancePath=Join-Path $root 'MultiChat-Maintenance.ps1'
 $emergencyPath=Join-Path $root 'Emergency-Stop-DesktopCommander.ps1'
 $hardeningPath=Join-Path $root 'Harden-DesktopCommander.ps1'
+$gitIgnorePath=Join-Path $root '.gitignore'
 
-foreach($required in @($trayPath,$maintenancePath,$emergencyPath,$hardeningPath)){
+foreach($required in @($trayPath,$maintenancePath,$emergencyPath,$hardeningPath,$gitIgnorePath)){
     if(-not(Test-Path -LiteralPath $required)){
         Add-Failure ("Missing security component: "+$required)
     }
@@ -38,6 +39,33 @@ if(Test-Path -LiteralPath $trayPath){
     }
     if($tray -notmatch 'Test-RemoteCommanderReady'){
         Add-Failure 'Readiness validation is missing'
+    }
+    if(-not $tray.Contains("Get-ChatProp `$cfg 'remoteDisconnectOnLock' `$true")){
+        Add-Failure 'Remote disconnect-on-lock secure default is missing'
+    }
+    if(-not $tray.Contains("Get-ChatProp `$cfg 'remoteIdleDisconnectMinutes' 30")){
+        Add-Failure 'Remote idle-disconnect secure default is missing'
+    }
+    if(-not $tray.Contains("Get-ChatProp `$cfg 'remotePurgeHistoryOnDisconnect' `$true")){
+        Add-Failure 'Remote history purge-on-disconnect secure default is missing'
+    }
+    if($tray -notmatch 'Clear-RemoteCommanderSensitiveHistory'){
+        Add-Failure 'Remote sensitive history cleanup is missing'
+    }
+    if($tray -notmatch '\$miExit\.Add_Click\(\{[\s\S]*?Stop-RemoteCommander'){
+        Add-Failure 'Desktop Commander is not stopped when MultiChat exits'
+    }
+}
+
+if(Test-Path -LiteralPath $gitIgnorePath){
+    $gitIgnore=[IO.File]::ReadAllText($gitIgnorePath)
+    if($gitIgnore -notmatch '(?m)^Configure-ThorGitHubSigningSecrets\.ps1$'){
+        Add-Failure 'Local GitHub signing helper is not protected by .gitignore'
+    }
+    foreach($pattern in @('.env','*.pem','*.key','*.pfx','*.p12')){
+        if(-not $gitIgnore.Contains($pattern)){
+            Add-Failure ("Missing secret ignore pattern: "+$pattern)
+        }
     }
 }
 
