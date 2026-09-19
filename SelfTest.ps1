@@ -61,6 +61,13 @@ try{
     if($trayText -notmatch 'Test-RemoteCommanderReady'){
         $errors+='Desktop Commander readiness validation is missing'
     }
+    if($trayText -notmatch 'Close-DashboardSession' -or $trayText -notmatch 'Add_CellMouseDown'){
+        $errors+='Dashboard right-click session close action is missing'
+    }
+    $moduleText=[IO.File]::ReadAllText((Join-Path $root 'ChatMulti.psm1'))
+    if($moduleText -notmatch 'function Close-ManagedChatSession' -or $moduleText -notmatch 'PID_MISMATCH'){
+        $errors+='Managed chat close safety checks are missing'
+    }
     $maintenanceText=[IO.File]::ReadAllText((Join-Path $root 'MultiChat-Maintenance.ps1'))
     if($maintenanceText -notmatch 'device\.json' -or $maintenanceText -notmatch 'Get-NetTCPConnection'){
         $errors+='Desktop Commander maintenance status does not validate authorization and connectivity'

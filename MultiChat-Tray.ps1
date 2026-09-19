@@ -668,6 +668,45 @@ function Complete-WorktreeCleanup {
     return $true
 }
 
+function Close-DashboardSession {
+    param([Parameter(Mandatory)][string]$SessionId)
+
+    $session=Get-ManagedChatSession -Id $SessionId
+    if(-not $session -or -not [bool](Get-ChatProp $session 'active' $false)){
+        Show-MultiChatInfo -Owner $form -Title 'Session already closed' -Message 'That managed chat session is no longer active.'
+        Refresh-Dashboard
+        return
+    }
+
+    if(Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue){
+        if(Test-SessionProtectedByLease $session){
+            Show-MultiChatInfo -Owner $form -Title 'Session is protected' -Message 'This chat has an active or protective lease. Close the external work first, then close the session.'
+            return
+        }
+    }
+
+    $slot=[int](Get-ChatProp $session 'slot' 0)
+    $project=[string](Get-ChatProp $session 'project' '')
+    $task=[string](Get-ChatProp $session 'task' '')
+    $message=("Close CHAT-{0} ({1})?`r`n`r`nTask: {2}`r`n`r`nThe managed shell will be terminated and its slot released. Its Git worktree and uncommitted files will be kept." -f $slot,$project,$task)
+    if(-not(Show-MultiChatConfirm -Owner $form -Title 'Close managed chat session?' -Message $message)){return}
+
+    $result=Close-ManagedChatSession -Id $SessionId -TerminateProcess -Reason 'DASHBOARD_CLOSE'
+    if(-not [bool]$result.Success){
+        $detail=switch([string]$result.Reason){
+            'LEASE_PROTECTED'{'The session is protected by an active lease.'}
+            'PID_MISMATCH'{'The recorded process no longer matches a managed MultiChat shell, so it was not terminated.'}
+            'PROCESS_STOP_FAILED'{'Windows did not allow the managed shell to be terminated.'}
+            'SELF_PROCESS'{'MultiChat refused to terminate its own dashboard process.'}
+            default{("MultiChat could not close the session ({0})." -f [string]$result.Reason)}
+        }
+        Show-MultiChatInfo -Owner $form -Title 'Could not close session' -Message $detail
+        return
+    }
+
+    Refresh-Dashboard
+}
+
 function Update-SessionRows {
     param([array]$Sessions)
 
@@ -709,6 +748,7 @@ function Update-SessionRows {
         }
 
         $row=$grid.Rows[$i]
+        $row.Cells['Chat'].Tag=[string]$s.id
         Set-GridCellValue $row 'Chat' "CHAT-$($s.slot)"
         Set-GridCellValue $row 'Project' $s.project
         Set-GridCellValue $row 'Activity' $activity
@@ -1129,6 +1169,8 @@ $grid.DefaultCellStyle.SelectionForeColor=$script:UiColors.Text
 $grid.DefaultCellStyle.Padding=New-Object Windows.Forms.Padding(5,2,5,2)
 $grid.DefaultCellStyle.Font=New-Object Drawing.Font('Segoe UI',8.5)
 $grid.RowTemplate.Height=34
+$grid.SelectionMode='FullRowSelect'
+$grid.MultiSelect=$false
 $grid.TabStop=$false
 Enable-ControlDoubleBuffer $grid
 $split.Panel1.Controls.Add($grid)
@@ -1144,6 +1186,30 @@ foreach($col in @(
     $column.FillWeight=[int]$col[2]
     [void]$grid.Columns.Add($column)
 }
+
+$chatRowMenu=New-Object Windows.Forms.ContextMenuStrip
+$closeChatMenuItem=$chatRowMenu.Items.Add('Close session')
+$script:contextSessionId=''
+$grid.Add_CellMouseDown({
+    param($sender,$eventArgs)
+    if($eventArgs.Button -ne [Windows.Forms.MouseButtons]::Right -or $eventArgs.RowIndex -lt 0){return}
+
+    $row=$sender.Rows[$eventArgs.RowIndex]
+    $sessionId=[string]$row.Cells['Chat'].Tag
+    if(-not $sessionId){return}
+
+    $sender.ClearSelection()
+    $row.Selected=$true
+    $sender.CurrentCell=$row.Cells['Chat']
+    $script:contextSessionId=$sessionId
+    $closeChatMenuItem.Text=("Close {0} session" -f [string]$row.Cells['Chat'].Value)
+    $point=$sender.PointToClient([Windows.Forms.Cursor]::Position)
+    $chatRowMenu.Show($sender,$point)
+})
+$closeChatMenuItem.Add_Click({
+    $sessionId=[string]$script:contextSessionId
+    if($sessionId){Close-DashboardSession -SessionId $sessionId}
+})
 
 $historyHeader=New-Object Windows.Forms.Panel
 $historyHeader.Dock='Top'

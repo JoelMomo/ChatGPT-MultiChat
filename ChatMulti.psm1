@@ -595,6 +595,66 @@ function Stop-ManagedChatSession {
     Write-ChatHistory $s 'NORMAL_EXIT'
     Write-ChatJson (Join-Path $script:SessionRoot "$($s.id).json") $s
 }
+function Close-ManagedChatSession {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [switch]$TerminateProcess,
+        [string]$Reason='USER_CLOSE'
+    )
+
+    $s=Get-ManagedChatSession -Id $Id
+    if(-not $s){
+        return [pscustomobject]@{Success=$false;Reason='NOT_FOUND';Id=$Id;Pid=0}
+    }
+
+    if(Get-Command Test-SessionProtectedByLease -ErrorAction SilentlyContinue){
+        if(Test-SessionProtectedByLease $s){
+            return [pscustomobject]@{
+                Success=$false
+                Reason='LEASE_PROTECTED'
+                Id=$Id
+                Pid=[int](Get-ChatProp $s 'pid' 0)
+            }
+        }
+    }
+
+    $ownerPid=[int](Get-ChatProp $s 'pid' 0)
+    if($TerminateProcess -and $ownerPid -gt 0 -and (Test-ChatProcessAlive $ownerPid)){
+        if($ownerPid -eq $PID){
+            return [pscustomobject]@{Success=$false;Reason='SELF_PROCESS';Id=$Id;Pid=$ownerPid}
+        }
+
+        $owner=$null
+        try{$owner=Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ownerPid) -ErrorAction Stop}catch{}
+        $commandLine=if($owner){[string]$owner.CommandLine}else{''}
+        if(-not $owner -or $commandLine -notmatch '(?i)Start-McpChatSession\.ps1'){
+            return [pscustomobject]@{Success=$false;Reason='PID_MISMATCH';Id=$Id;Pid=$ownerPid}
+        }
+
+        try{
+            Stop-Process -Id $ownerPid -Force -ErrorAction Stop
+            try{Wait-Process -Id $ownerPid -Timeout 3 -ErrorAction SilentlyContinue}catch{}
+        }catch{
+            if(Test-ChatProcessAlive $ownerPid){
+                return [pscustomobject]@{Success=$false;Reason='PROCESS_STOP_FAILED';Id=$Id;Pid=$ownerPid}
+            }
+        }
+    }
+
+    $s | Add-Member -NotePropertyName shellAlive -NotePropertyValue $false -Force
+    $s.active=$false
+    $s.status='ENDED'
+    $s.updatedAt=(Get-Date).ToString('o')
+    if(-not(Release-SessionReservations $s)){
+        return [pscustomobject]@{Success=$false;Reason='RESERVATION_RELEASE_FAILED';Id=$Id;Pid=$ownerPid}
+    }
+    Write-ChatHistory $s $Reason
+    Write-ChatJson (Join-Path $script:SessionRoot "$($s.id).json") $s
+
+    return [pscustomobject]@{Success=$true;Reason=$Reason;Id=$Id;Pid=$ownerPid}
+}
+
 function Show-ManagedChatStatus {
     $sessions = @(Get-ManagedChatSessions | Where-Object active | Sort-Object slot)
     if (-not $sessions.Count) {
@@ -620,4 +680,4 @@ function Show-ManagedChatStatus {
 . (Join-Path $PSScriptRoot 'ChatMulti.Advanced.ps1')
 . (Join-Path $PSScriptRoot 'ChatMulti.Hardening.ps1')
 
-Export-ModuleMember -Function Initialize-ChatMulti,Get-ChatColor,Get-ChatConfig,Get-ManagedChatSession,Get-ManagedChatSessions,Expire-IdleManagedChatSessions,New-ManagedChatSession,Stop-ManagedChatSession,Install-ManagedChatPrompt,Set-ManagedChatState,Show-ManagedChatStatus,Acquire-ChatResource,Release-ChatResource,Get-ChatResourceLock,Get-ChatResourceLocks,Resolve-ChatCommandStatus,Get-ConfiguredResourceNames,Resolve-ChatCommandResources,Resolve-AndroidCommandResources,Invoke-WithChatResource,Invoke-WithChatResources,Invoke-WithChatLease,New-ChatLease,Update-ChatLease,Close-ChatLease,Get-ChatLeases,Get-SessionLeaseState,Test-SessionProtectedByLease,Resolve-ExactGitBase,Resolve-ChatCanonicalRef,Get-ManagedWorktreeIdentity,Get-ManagedCommitSafety,Test-ManagedChatSessionInvariant,Claim-ChatPort,Release-ChatPort,Get-RegisteredChatProjects,Register-ChatProject,Resolve-ChatProjectPath,Get-ChatHistory,Get-ChatGitSummary,Get-WorktreeCleanupCandidates,Invoke-SafeWorktreeCleanup,Get-SessionIdleInfo,Get-ChatPortReservations,Get-ProjectConflictGroups,Get-ChatProp
+Export-ModuleMember -Function Initialize-ChatMulti,Get-ChatColor,Get-ChatConfig,Get-ManagedChatSession,Get-ManagedChatSessions,Expire-IdleManagedChatSessions,New-ManagedChatSession,Stop-ManagedChatSession,Close-ManagedChatSession,Install-ManagedChatPrompt,Set-ManagedChatState,Show-ManagedChatStatus,Acquire-ChatResource,Release-ChatResource,Get-ChatResourceLock,Get-ChatResourceLocks,Resolve-ChatCommandStatus,Get-ConfiguredResourceNames,Resolve-ChatCommandResources,Resolve-AndroidCommandResources,Invoke-WithChatResource,Invoke-WithChatResources,Invoke-WithChatLease,New-ChatLease,Update-ChatLease,Close-ChatLease,Get-ChatLeases,Get-SessionLeaseState,Test-SessionProtectedByLease,Resolve-ExactGitBase,Resolve-ChatCanonicalRef,Get-ManagedWorktreeIdentity,Get-ManagedCommitSafety,Test-ManagedChatSessionInvariant,Claim-ChatPort,Release-ChatPort,Get-RegisteredChatProjects,Register-ChatProject,Resolve-ChatProjectPath,Get-ChatHistory,Get-ChatGitSummary,Get-WorktreeCleanupCandidates,Invoke-SafeWorktreeCleanup,Get-SessionIdleInfo,Get-ChatPortReservations,Get-ProjectConflictGroups,Get-ChatProp
