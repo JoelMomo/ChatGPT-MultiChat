@@ -194,7 +194,7 @@ if(Test-Path -LiteralPath $childPath){
     if(-not $child.Contains('ReadLineAsync')){
         Add-RestrictedFailure 'Restricted child does not drain Remote stdout/stderr without persisting tool content.'
     }
-    if(($child.Split('$null -eq $line').Count-1) -lt 2){
+    if(([regex]::Matches($child,[regex]::Escape('$null -eq $line'))).Count -lt 2){
         Add-RestrictedFailure 'Restricted child async output drains can spin forever at EOF.'
     }
     if(-not $child.Contains('Get-NetTCPConnection')){
