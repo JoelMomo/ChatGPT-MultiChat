@@ -185,6 +185,9 @@ function Test-RemoteCommanderReady {
             if(-not $status -or [string]$status.state -ne 'RUNNING'){return $false}
             $launcherPid=[int]$status.launcherPid
             if($launcherPid -le 0 -or -not(Get-Process -Id $launcherPid -ErrorAction SilentlyContinue)){return $false}
+            if(Get-Command Test-RestrictedRemoteReady -ErrorAction SilentlyContinue){
+                if(Test-RestrictedRemoteReady){return $true}
+            }
             $pids=@(Get-ProcessTreeIds -RootPid $launcherPid)
             return @(
                 Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
@@ -239,6 +242,13 @@ function Start-RemoteCommanderHidden {
         return $false
     }
     if(Test-RestrictedRemoteEnabled){
+        $existingLauncher=Get-RestrictedRemoteLauncherProcess
+        if($existingLauncher){
+            $script:dcOnline=Test-RemoteCommanderReady
+            $script:dcChecked=$true
+            $script:dcConnecting=(-not $script:dcOnline)
+            return $true
+        }
         $launcherScript=Join-Path $root 'RestrictedRemote-Launcher.ps1'
         if(-not(Test-Path -LiteralPath $launcherScript)){
             $script:dcConnecting=$false

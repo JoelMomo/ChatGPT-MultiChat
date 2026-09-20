@@ -37,6 +37,9 @@ $repairPath=Join-Path $root 'Repair-RestrictedRemoteRuntime.ps1'
 $activatorPath=Join-Path $root 'Activate-RestrictedRemote.ps1'
 $launcherPath=Join-Path $root 'RestrictedRemote-Launcher.ps1'
 $childPath=Join-Path $root 'RestrictedRemote-Child.ps1'
+$restrictedModulePath=Join-Path $root 'RestrictedRemote.psm1'
+$trayPath=Join-Path $root 'MultiChat-Tray.ps1'
+$maintenancePath=Join-Path $root 'MultiChat-Maintenance.ps1'
 if(Test-Path -LiteralPath $chatMultiPath){
     $chatMulti=[IO.File]::ReadAllText($chatMultiPath)
     if(-not $chatMulti.Contains('restricted-identities')){
@@ -152,6 +155,60 @@ if(Test-Path -LiteralPath $launcherPath){
     }
     if(-not $launcher.Contains('<redacted>')){
         Add-RestrictedFailure 'Restricted launcher diagnostics do not redact credential-like values.'
+    }
+    if(-not $launcher.Contains('restricted-remote-ready.json')){
+        Add-RestrictedFailure 'Restricted launcher does not define a readiness marker.'
+    }
+    if(-not $launcher.Contains('$watcherEncoded')){
+        Add-RestrictedFailure 'Restricted launcher does not embed the same-identity readiness sidecar.'
+    }
+    if(-not $launcher.Contains('Get-NetTCPConnection')){
+        Add-RestrictedFailure 'Restricted readiness sidecar does not validate a TCP connection.'
+    }
+    if(-not $launcher.Contains('RemotePort -eq 443')){
+        Add-RestrictedFailure 'Restricted readiness sidecar is not scoped to TCP 443.'
+    }
+    if(-not $launcher.Contains('$watcherCreated=[MultiChatRestrictedJob]::CreateProcessWithLogonW')){
+        Add-RestrictedFailure 'Restricted readiness sidecar is not launched natively under the restricted identity.'
+    }
+    if(-not $launcher.Contains('MULTICHAT_WATCH_BOOTSTRAP_PID')){
+        Add-RestrictedFailure 'Restricted readiness watcher is not bound to the known-good bootstrap PID.'
+    }
+    if($launcher.Contains('start "" /b')){
+        Add-RestrictedFailure 'Restricted readiness sidecar still depends on cmd START inside the no-window bootstrap.'
+    }
+    if(-not $launcher.Contains('Could not create Restricted Remote readiness watcher')){
+        Add-RestrictedFailure 'Restricted readiness watcher has no bounded native startup diagnostic.'
+    }
+    if($launcher -notmatch '\$config\.nodePath\)\)\+''" "''\+\$\(Escape-BatchValue \(\[string\]\$config\.entryPoint\)\)\+''" remote'){
+        Add-RestrictedFailure 'Known-good direct Node Remote launch was changed.'
+    }
+}
+if(Test-Path -LiteralPath $restrictedModulePath){
+    $restrictedModule=[IO.File]::ReadAllText($restrictedModulePath)
+    if(-not $restrictedModule.Contains('Test-RestrictedRemoteReady')){
+        Add-RestrictedFailure 'Restricted module does not expose readiness freshness validation.'
+    }
+    if($restrictedModule -match 'Get-Process\s+-Id\s+\$remotePid'){
+        Add-RestrictedFailure 'Owner-side readiness still inspects a restricted-user PID.'
+    }
+    if($restrictedModule -notmatch '\$age\s+-ge\s+0\s+-and\s+\$age\s+-le\s+\$MaxAgeSeconds'){
+        Add-RestrictedFailure 'Readiness marker freshness is not bounded.'
+    }
+}
+if(Test-Path -LiteralPath $trayPath){
+    $tray=[IO.File]::ReadAllText($trayPath)
+    if(-not $tray.Contains('$existingLauncher=Get-RestrictedRemoteLauncherProcess')){
+        Add-RestrictedFailure 'Tray can spawn duplicate restricted launchers while one is alive.'
+    }
+    if(-not $tray.Contains('Test-RestrictedRemoteReady')){
+        Add-RestrictedFailure 'Tray does not consume the restricted readiness marker.'
+    }
+}
+if(Test-Path -LiteralPath $maintenancePath){
+    $maintenance=[IO.File]::ReadAllText($maintenancePath)
+    if(-not $maintenance.Contains('Test-RestrictedRemoteReady')){
+        Add-RestrictedFailure 'Maintenance status does not consume the restricted readiness marker.'
     }
 }
 if(Test-Path -LiteralPath $childPath){
