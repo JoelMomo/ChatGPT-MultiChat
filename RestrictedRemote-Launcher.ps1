@@ -101,6 +101,7 @@ public static class MultiChatRestrictedJob {
 '@
 $job=[IntPtr]::Zero
 $child=$null
+$failed=$false
 try{
     Write-RestrictedRemoteStatus -State 'STARTING' -LauncherPid $PID
     $job=[MultiChatRestrictedJob]::CreateKillOnCloseJob()
@@ -194,9 +195,13 @@ try{
         if(Test-Path -LiteralPath $killSwitch){break}
         if(-not(Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)){break}
         $child.Refresh()
-        if($child.HasExited){break}
+        if($child.HasExited){
+            $exitCode=try{$child.ExitCode}catch{-1}
+            throw "Restricted Remote child exited unexpectedly (exit $exitCode)."
+        }
     }
 }catch{
+    $failed=$true
     try{
         Write-RestrictedRemoteStatus -State 'FAILED' -LauncherPid $PID -ChildPid $(if($child){$child.Id}else{0}) -Message $_.Exception.Message
     }catch{}
@@ -207,5 +212,7 @@ try{
         [void][MultiChatRestrictedJob]::CloseHandle($job)
     }
     if($child){$child.Dispose()}
-    try{Write-RestrictedRemoteStatus -State 'STOPPED' -LauncherPid $PID}catch{}
+    if(-not $failed){
+        try{Write-RestrictedRemoteStatus -State 'STOPPED' -LauncherPid $PID}catch{}
+    }
 }
