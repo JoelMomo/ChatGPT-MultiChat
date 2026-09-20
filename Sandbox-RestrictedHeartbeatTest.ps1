@@ -15,6 +15,9 @@ $watcherEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wat
 $temp=Join-Path $env:TEMP ('MultiChat-HeartbeatSandbox-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp -Force|Out-Null
 $ready=Join-Path $temp 'restricted-remote-ready.json'
+$diagnostic=Join-Path $temp 'restricted-remote-ready-diagnostic.json'
+$watcherStdout=Join-Path $temp 'watcher.stdout.txt'
+$watcherStderr=Join-Path $temp 'watcher.stderr.txt'
 $serverJs=Join-Path $temp 'sandbox-443-server.js'
 $fakeJs=Join-Path $temp 'sandbox-fake-remote.js'
 $cmdFile=Join-Path $temp 'sandbox.cmd'
@@ -46,8 +49,9 @@ setInterval(() => {}, 1000);
     $lines=@(
         '@echo off',
         ('set "MULTICHAT_READY_PATH='+$ready+'"'),
+        ('set "MULTICHAT_READY_DIAGNOSTIC_PATH='+$diagnostic+'"'),
         ('set "MULTICHAT_ENTRY_POINT='+$fakeJs+'"'),
-        ('start "" /b "'+$ps+'" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand '+$watcherEncoded+' >nul 2>&1'),
+        ('start "" /b "'+$ps+'" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand '+$watcherEncoded+' 1>"'+$watcherStdout+'" 2>"'+$watcherStderr+'"'),
         ('"'+$node+'" "'+$fakeJs+'" remote >nul 2>&1')
     )
     [IO.File]::WriteAllLines($cmdFile,$lines,(New-Object Text.UTF8Encoding($false)))
@@ -57,7 +61,29 @@ setInterval(() => {}, 1000);
     while((Get-Date) -lt $deadline -and -not(Test-Path -LiteralPath $ready)){
         Start-Sleep -Milliseconds 200
     }
-    if(-not(Test-Path -LiteralPath $ready)){throw 'Readiness marker was not created.'}
+    if(-not(Test-Path -LiteralPath $ready)){
+        $parts=New-Object Collections.Generic.List[string]
+        if(Test-Path -LiteralPath $diagnostic){
+            try{[void]$parts.Add('diagnostic='+([IO.File]::ReadAllText($diagnostic).Trim()))}catch{}
+        }
+        if(Test-Path -LiteralPath $watcherStderr){
+            try{
+                $err=([IO.File]::ReadAllText($watcherStderr).Trim())
+                if($err.Length -gt 800){$err=$err.Substring(0,800)+'...'}
+                if($err){[void]$parts.Add('stderr='+$err)}
+            }catch{}
+        }
+        if(Test-Path -LiteralPath $watcherStdout){
+            try{
+                $out=([IO.File]::ReadAllText($watcherStdout).Trim())
+                if($out.Length -gt 800){$out=$out.Substring(0,800)+'...'}
+                if($out){[void]$parts.Add('stdout='+$out)}
+            }catch{}
+        }
+        $detail=($parts -join ' | ')
+        if($detail){throw ('Readiness marker was not created. '+$detail)}
+        throw 'Readiness marker was not created and the watcher produced no diagnostic output.'
+    }
 
     $first=Get-Content -LiteralPath $ready -Raw|ConvertFrom-Json
     $firstTime=[datetimeoffset]::Parse([string]$first.updatedAt)
