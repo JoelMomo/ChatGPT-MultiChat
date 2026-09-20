@@ -184,7 +184,7 @@ if(-not $nodePath){throw 'Node.js is required for Restricted Remote.'}
 if(-not $runtime){throw 'Reviewed Desktop Commander 0.2.51 runtime was not found in the npm cache.'}
 $plainPassword=New-RandomPassword
 $securePassword=ConvertTo-SecureString $plainPassword -AsPlainText -Force
-$accountDescription='Restricted identity for ChatGPT MultiChat Remote Desktop Commander'
+$accountDescription='ChatGPT MultiChat restricted remote identity'
 $account=Get-LocalUser -Name $AccountName -ErrorAction SilentlyContinue
 if($account){
     if([string]$account.Description -ne $accountDescription){

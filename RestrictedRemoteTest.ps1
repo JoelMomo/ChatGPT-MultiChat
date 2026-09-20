@@ -40,6 +40,10 @@ if(Test-Path -LiteralPath $installerPath){
     if($installer -notmatch 'shared clones'){
         Add-RestrictedFailure 'Installer does not declare shared-clone Git isolation.'
     }
+    $descriptionMatch=[regex]::Match($installer,"\$accountDescription='([^']*)'")
+    if(-not $descriptionMatch.Success -or $descriptionMatch.Groups[1].Value.Length -gt 48){
+        Add-RestrictedFailure 'Restricted Windows account description exceeds the 48-character LocalAccounts limit.'
+    }
 }
 if(Test-Path -LiteralPath $launcherPath){
     $launcher=[IO.File]::ReadAllText($launcherPath)
