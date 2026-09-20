@@ -37,6 +37,7 @@ $repairPath=Join-Path $root 'Repair-RestrictedRemoteRuntime.ps1'
 $activatorPath=Join-Path $root 'Activate-RestrictedRemote.ps1'
 $launcherPath=Join-Path $root 'RestrictedRemote-Launcher.ps1'
 $childPath=Join-Path $root 'RestrictedRemote-Child.ps1'
+$trayPath=Join-Path $root 'MultiChat-Tray.ps1'
 if(Test-Path -LiteralPath $chatMultiPath){
     $chatMulti=[IO.File]::ReadAllText($chatMultiPath)
     if(-not $chatMulti.Contains('restricted-identities')){
@@ -190,8 +191,23 @@ if(Test-Path -LiteralPath $childPath){
     if(-not $child.Contains('restricted-remote-ready.json')){
         Add-RestrictedFailure 'Restricted child does not publish a connection readiness heartbeat.'
     }
-    if(-not $child.Contains('Get-NetTCPConnection')){
-        Add-RestrictedFailure 'Restricted child heartbeat does not validate an established remote connection.'
+    if(-not $child.Contains('ReadLineAsync')){
+        Add-RestrictedFailure 'Restricted child does not drain Remote stdout/stderr without persisting tool content.'
+    }
+    if(-not $child.Contains('Device ready:') -or -not $child.Contains('Presence tracked')){
+        Add-RestrictedFailure 'Restricted child heartbeat does not derive readiness from Remote connection output.'
+    }
+    if($child.Contains('Get-NetTCPConnection')){
+        Add-RestrictedFailure 'Restricted child readiness still depends on TCP ownership inspection.'
+    }
+}
+if(Test-Path -LiteralPath $trayPath){
+    $tray=[IO.File]::ReadAllText($trayPath)
+    if(-not $tray.Contains('$existingLauncher=Get-RestrictedRemoteLauncherProcess')){
+        Add-RestrictedFailure 'Tray can relaunch Restricted Remote while an existing launcher is still alive.'
+    }
+    if(-not $tray.Contains('$script:dcConnecting=(-not $script:dcOnline)')){
+        Add-RestrictedFailure 'Tray does not preserve connecting state for a live Restricted Remote launcher.'
     }
 }
 
