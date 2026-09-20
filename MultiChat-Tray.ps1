@@ -185,6 +185,14 @@ function Test-RemoteCommanderReady {
             if(-not $status -or [string]$status.state -ne 'RUNNING'){return $false}
             $launcherPid=[int]$status.launcherPid
             if($launcherPid -le 0 -or -not(Get-Process -Id $launcherPid -ErrorAction SilentlyContinue)){return $false}
+
+            # Prefer the heartbeat emitted from inside the restricted identity.
+            # Cross-user TCP ownership queries can be incomplete for a standard
+            # interactive token even when the remote channel is actually online.
+            if(Get-Command Test-RestrictedRemoteReady -ErrorAction SilentlyContinue){
+                if(Test-RestrictedRemoteReady){return $true}
+            }
+
             $pids=@(Get-ProcessTreeIds -RootPid $launcherPid)
             return @(
                 Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
