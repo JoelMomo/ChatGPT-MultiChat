@@ -100,6 +100,35 @@ function Install-ReviewedRuntime {
     }
 }
 
+function Write-RestrictedIdentityMarker {
+    param($Config)
+
+    $ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $commonData=[Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    $markerRoot=Join-Path $commonData 'ChatGPT-MultiChat\restricted-identities'
+    $markerPath=Join-Path $markerRoot (([string]$Config.userSid)+'.json')
+    New-Item -ItemType Directory -Path $markerRoot -Force|Out-Null
+    Invoke-IcaclsChecked @($markerRoot,'/inheritance:r')
+    Invoke-IcaclsChecked @($markerRoot,'/grant:r','*S-1-5-18:(OI)(CI)F')
+    Invoke-IcaclsChecked @($markerRoot,'/grant','*S-1-5-32-544:(OI)(CI)F')
+    Invoke-IcaclsChecked @($markerRoot,'/grant',('*'+$ownerSid+':(OI)(CI)R'))
+    Invoke-IcaclsChecked @($markerRoot,'/grant',('*'+[string]$Config.userSid+':(OI)(CI)R'))
+
+    $payload=[ordered]@{
+        schemaVersion=1
+        userSid=[string]$Config.userSid
+        accountName=[string]$Config.accountName
+        installRoot=$root
+        profilePath=[string]$Config.profilePath
+        stateRoot=[string]$Config.stateRoot
+        workspaceRoot=[string]$Config.workspaceRoot
+        configuredAt=(Get-Date).ToString('o')
+    }
+    [IO.File]::WriteAllText($markerPath,($payload|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
+    Invoke-IcaclsChecked @($markerPath,'/inheritance:e')
+    return $markerPath
+}
+
 if(-not(Test-Administrator)){
     $args=@(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
@@ -153,6 +182,9 @@ $config.runtimeRoot=$installed.Root
 $config.entryPoint=$installed.EntryPoint
 $config.packageVersion=$packageVersion
 $config.packageIntegrity=$packageIntegrity
+$identityMarkerPath=Write-RestrictedIdentityMarker -Config $config
+$markerProperty=$config.PSObject.Properties['identityMarkerPath']
+if($markerProperty){$markerProperty.Value=$identityMarkerPath}else{$config|Add-Member -NotePropertyName identityMarkerPath -NotePropertyValue $identityMarkerPath}
 
 $configPath=Get-RestrictedRemoteConfigPath
 $temp=$configPath+'.runtime-repair.tmp'
