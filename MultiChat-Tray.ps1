@@ -840,7 +840,7 @@ function Close-DashboardSession {
     $slot=[int](Get-ChatProp $session 'slot' 0)
     $project=[string](Get-ChatProp $session 'project' '')
     $task=[string](Get-ChatProp $session 'task' '')
-    $message=("Close CHAT-{0} ({1})?`r`n`r`nTask: {2}`r`n`r`nThe managed shell will be terminated and its slot released. Its Git worktree and uncommitted files will be kept." -f $slot,$project,$task)
+    $message=("Close CHAT-{0} ({1})?`r`n`r`nTask: {2}`r`n`r`nThe managed shell will be terminated and its slot released. Its Git worktree and uncommitted files will be kept.`r`n`r`nAn IDLE session can still belong to an active ChatGPT conversation, so close it only when you intend to disconnect that chat from its managed shell." -f $slot,$project,$task)
     if(-not(Show-MultiChatConfirm -Owner $form -Title 'Close managed chat session?' -Message $message)){return}
 
     $result=Close-ManagedChatSession -Id $SessionId -TerminateProcess -Reason 'DASHBOARD_CLOSE'
@@ -881,7 +881,7 @@ function Update-SessionRows {
         $s=$Sessions[$i]
         $idle=Get-SessionIdleInfo -Session $s -SkipGit
         if([string]$s.status -eq 'READY'){
-            $activity=if($idle.abandoned){'ABANDONED'}else{'FREE'}
+            $activity=if($idle.idle){'IDLE'}else{'FREE'}
             $detail=''
         }else{
             $activity='WORKING'
@@ -932,7 +932,7 @@ function Update-SessionRows {
 
             $row.Cells['Activity'].Style.ForeColor=switch($activity){
                 'WORKING'{$script:UiColors.Warn}
-                'ABANDONED'{$script:UiColors.Bad}
+                'IDLE'{$script:UiColors.Muted}
                 default{$script:UiColors.Good}
             }
             $row.Cells['Warning'].Style.ForeColor=if($warning){$script:UiColors.Warn}else{$script:UiColors.Muted}

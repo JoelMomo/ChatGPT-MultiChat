@@ -281,7 +281,7 @@ The dashboard shows one row per active managed chat:
 |---|---|
 | Chat | Assigned slot (`CHAT-1` ... `CHAT-N`, according to the configured capacity) |
 | Project | Associated project |
-| Activity | `FREE`, `WORKING`, or `ABANDONED` |
+| Activity | `FREE`, `IDLE`, or `WORKING` |
 | Detail | Detected command/activity type |
 | Time | Time since the last state update |
 | Git | Compact Git summary |
@@ -308,16 +308,16 @@ This keeps the WinForms UI responsive even when Git operations take around a sec
 
 ## Session states and expiry
 
-When a managed session is in `READY`, the dashboard displays it as `FREE`. If it remains idle for the configured amount of time, it becomes `ABANDONED`.
+When a managed session is in `READY`, the dashboard displays it as `FREE`. After 10 minutes without a managed-shell command it becomes `IDLE`. `IDLE` means only that the shell has been quiet; it does **not** mean the ChatGPT conversation has ended or been abandoned.
 
 Default behavior:
 
-- `ABANDONED`: after 3 minutes in `READY`.
-- Clean idle session: may be released after 10 minutes.
-- Idle session with local changes: waits 20 minutes.
-- Active work such as `BUILD`, `TEST`, `ADB`, or `SERVER`: does not expire while that activity is active.
+- `FREE`: the managed shell is ready and was used recently.
+- `IDLE`: the managed shell has been quiet for 10 minutes but remains allocated and is not terminated automatically.
+- `WORKING`: MultiChat currently sees managed activity such as `BUILD`, `TEST`, `ADB`, `SERVER`, or another command class.
+- Automatic READY-session expiry is **off by default**. Users who explicitly opt into `autoExpireIdleSessions` can still use the legacy clean/dirty expiry thresholds.
 
-If the process that owns a session disappears, MultiChat can release its slot, port, and resource locks **only when no protective external lease exists**. An `ACTIVE`, `STALE`, `MISMATCH`, or `UNKNOWN` lease keeps the session fail-closed.
+If the process that owns a session disappears, MultiChat can release its slot, port, and resource locks **only when no protective external lease exists**. An `ACTIVE`, `STALE`, `MISMATCH`, or `UNKNOWN` lease keeps the session fail-closed. The dashboard's right-click close action is always explicit and warns that an `IDLE` shell may still belong to an active chat.
 
 ## Git worktrees
 
@@ -435,9 +435,10 @@ The main settings live in `config.json`:
 | `cleanupScanSeconds` | 30 | Background worktree-scan interval |
 | `autoCleanSafeWorktrees` | true | Automatically remove finished worktrees that pass all SAFE checks |
 | `defaultLeaseTtlMinutes` | 60 | Default external-executor lease TTL when a caller does not supply one |
-| `abandonedAfterMinutes` | 3 | Time before a READY session is marked abandoned |
-| `cleanExpireMinutes` | 10 | Expiry for clean idle sessions |
-| `dirtyExpireMinutes` | 20 | Expiry for idle sessions with local changes |
+| `idleAfterMinutes` | 10 (code default) | Time before a quiet READY shell is displayed as `IDLE`; absence of this optional property uses 10 minutes |
+| `autoExpireIdleSessions` | false (code default) | Opt-in automatic expiry of live READY shells; disabled by default because shell silence cannot prove the chat was abandoned |
+| `cleanExpireMinutes` | 10 | Clean-session expiry threshold when `autoExpireIdleSessions` is explicitly enabled |
+| `dirtyExpireMinutes` | 20 | Dirty-session expiry threshold when `autoExpireIdleSessions` is explicitly enabled |
 | `portRangeStart` | 3000 | First reservable development port |
 | `portRangeCount` | 100 | Number of ports in the reservation pool |
 | `historyLimit` | 50 | Maximum stored history entries |

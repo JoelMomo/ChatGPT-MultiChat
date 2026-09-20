@@ -46,6 +46,12 @@ try{
     if([int](Get-ChatProp $cfg 'updateCheckHours' 0) -lt 1){$errors+='updateCheckHours is invalid'}
     if([string](Get-ChatProp $cfg 'updateChannel' '') -notin @('stable','beta')){$errors+='updateChannel is invalid'}
 
+    $idleProbe=[pscustomobject]@{status='READY';updatedAt=(Get-Date).AddHours(-2).ToString('o')}
+    $idleInfo=Get-SessionIdleInfo -Session $idleProbe -SkipGit
+    if(-not [bool]$idleInfo.idle){$errors+='Quiet READY sessions are not classified as IDLE'}
+    if([bool]$idleInfo.expired){$errors+='Live READY sessions must not auto-expire unless explicitly opted in'}
+    if([bool]$idleInfo.autoExpireEnabled){$errors+='autoExpireIdleSessions must default to false when absent'}
+
     $trayText=[IO.File]::ReadAllText((Join-Path $root 'MultiChat-Tray.ps1'))
     if($trayText -match '@wonderwhy-er/desktop-commander@latest'){
         $errors+='Desktop Commander must not be launched from @latest'

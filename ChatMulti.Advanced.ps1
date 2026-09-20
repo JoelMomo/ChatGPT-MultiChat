@@ -605,26 +605,39 @@ function Get-SessionIdleInfo {
 
     $minutes = ((Get-Date)-$since).TotalMinutes
     $isReady = ([string](Get-ChatProp $Session 'status' '') -eq 'READY')
-    $cleanLimit = [int]$cfg.cleanExpireMinutes
-    $dirtyLimit = [int]$cfg.dirtyExpireMinutes
+    $idleAfter = [int](Get-ChatProp $cfg 'idleAfterMinutes' 10)
+    if ($idleAfter -lt 1) { $idleAfter = 10 }
+
+    # A quiet managed shell is not proof that the ChatGPT conversation was
+    # abandoned. By default, keep live READY shells allocated until the user
+    # closes them or their owner process disappears. Legacy clean/dirty expiry
+    # thresholds are only active when explicitly opted in.
+    $autoExpire = [bool](Get-ChatProp $cfg 'autoExpireIdleSessions' $false)
+    $cleanLimit = [int](Get-ChatProp $cfg 'cleanExpireMinutes' 10)
+    $dirtyLimit = [int](Get-ChatProp $cfg 'dirtyExpireMinutes' 20)
+    if ($cleanLimit -lt 1) { $cleanLimit = 10 }
+    if ($dirtyLimit -lt 1) { $dirtyLimit = 20 }
     $firstExpiryThreshold = [Math]::Min($cleanLimit,$dirtyLimit)
 
     $git = $GitSummary
-    if (-not $SkipGit -and $null -eq $git -and $isReady -and $minutes -ge $firstExpiryThreshold) {
+    if ($autoExpire -and -not $SkipGit -and $null -eq $git -and $isReady -and $minutes -ge $firstExpiryThreshold) {
         $git = Get-ChatGitSummary $Session
     }
 
     $dirty = $false
     if ($git -and $git.hasGit) { $dirty = [bool]$git.dirty }
     $limit = if ($dirty) { $dirtyLimit } else { $cleanLimit }
+    $idle = ($isReady -and $minutes -ge $idleAfter)
 
     return [pscustomobject]@{
         isReady = $isReady
         minutes = $minutes
-        abandoned = ($isReady -and $minutes -ge [int]$cfg.abandonedAfterMinutes)
+        idle = $idle
+        abandoned = $idle
+        autoExpireEnabled = $autoExpire
         dirty = $dirty
         expireAfterMinutes = $limit
-        expired = ($isReady -and $minutes -ge $limit)
+        expired = ($autoExpire -and $isReady -and $minutes -ge $limit)
     }
 }
 
