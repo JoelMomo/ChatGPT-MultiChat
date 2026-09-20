@@ -216,7 +216,7 @@ try{
         'set "GIT_TERMINAL_PROMPT=0"',
         'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
         '"%SystemRoot%\\System32\\ping.exe" -n 2 127.0.0.1 >nul',
-        ('"'+$(Escape-BatchValue ([string]$config.nodePath))+'" "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" remote 1>"'+$(Escape-BatchValue $childStdout)+'" 2>"'+$(Escape-BatchValue $childStderr)+'"'),
+        ('"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "'+$(Escape-BatchValue $childScript)+'" -ProfilePath "'+$(Escape-BatchValue $profile)+'" -NodePath "'+$(Escape-BatchValue ([string]$config.nodePath))+'" -EntryPoint "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" -ManagerRoot "'+$(Escape-BatchValue $root)+'" 1>"'+$(Escape-BatchValue $childStdout)+'" 2>"'+$(Escape-BatchValue $childStderr)+'"'),
         'set "rc=%errorlevel%"',
         'del /q "%USERPROFILE%\\.claude-server-commander\\claude_tool_call*.log" >nul 2>&1',
         'del /q "%USERPROFILE%\\.claude-server-commander\\tool-history*.jsonl" >nul 2>&1',
