@@ -147,6 +147,9 @@ if(Test-Path -LiteralPath $launcherPath){
     if(-not $launcher.Contains('restricted-remote-child.stderr.tmp')){
         Add-RestrictedFailure 'Restricted launcher does not capture child startup stderr for diagnosis.'
     }
+    if(-not $launcher.Contains('RestrictedRemote-Child.ps1')){
+        Add-RestrictedFailure 'Restricted launcher bypasses the restricted child supervisor.'
+    }
     if(-not $launcher.Contains('Diagnostic:')){
         Add-RestrictedFailure 'Restricted launcher does not surface bounded child startup diagnostics.'
     }
@@ -164,6 +167,12 @@ if(Test-Path -LiteralPath $childPath){
     }
     if($child -notmatch 'MULTICHAT_STATE_ROOT' -or $child -notmatch 'MULTICHAT_WORKSPACE_ROOT'){
         Add-RestrictedFailure 'Restricted child does not isolate MultiChat state and workspace roots.'
+    }
+    if(-not $child.Contains('restricted-remote-ready.json')){
+        Add-RestrictedFailure 'Restricted child does not publish a connection readiness heartbeat.'
+    }
+    if(-not $child.Contains('Get-NetTCPConnection')){
+        Add-RestrictedFailure 'Restricted child heartbeat does not validate an established remote connection.'
     }
 }
 
