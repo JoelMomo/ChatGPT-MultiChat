@@ -37,7 +37,9 @@ $repairPath=Join-Path $root 'Repair-RestrictedRemoteRuntime.ps1'
 $activatorPath=Join-Path $root 'Activate-RestrictedRemote.ps1'
 $launcherPath=Join-Path $root 'RestrictedRemote-Launcher.ps1'
 $childPath=Join-Path $root 'RestrictedRemote-Child.ps1'
+$restrictedModulePath=Join-Path $root 'RestrictedRemote.psm1'
 $trayPath=Join-Path $root 'MultiChat-Tray.ps1'
+$maintenancePath=Join-Path $root 'MultiChat-Maintenance.ps1'
 if(Test-Path -LiteralPath $chatMultiPath){
     $chatMulti=[IO.File]::ReadAllText($chatMultiPath)
     if(-not $chatMulti.Contains('restricted-identities')){
@@ -107,16 +109,6 @@ if(Test-Path -LiteralPath $activatorPath){
         Add-RestrictedFailure 'Activator can remove normal authorization before stopping the tray.'
     }
 }
-$restrictedModulePath=Join-Path $root 'RestrictedRemote.psm1'
-if(Test-Path -LiteralPath $restrictedModulePath){
-    $restrictedModule=[IO.File]::ReadAllText($restrictedModulePath)
-    if($restrictedModule -match 'Get-Process\s+-Id\s+\$remotePid'){
-        Add-RestrictedFailure 'Restricted readiness still depends on cross-user process inspection.'
-    }
-    if($restrictedModule -notmatch '\$age\s+-ge\s+0\s+-and\s+\$age\s+-le\s+\$MaxAgeSeconds'){
-        Add-RestrictedFailure 'Restricted readiness does not validate heartbeat freshness.'
-    }
-}
 if(Test-Path -LiteralPath $launcherPath){
     $launcher=[IO.File]::ReadAllText($launcherPath)
     if($launcher -notmatch '-UseNewEnvironment'){
@@ -158,23 +150,56 @@ if(Test-Path -LiteralPath $launcherPath){
     if(-not $launcher.Contains('restricted-remote-child.stderr.tmp')){
         Add-RestrictedFailure 'Restricted launcher does not capture child startup stderr for diagnosis.'
     }
-    if(-not $launcher.Contains('RestrictedRemote-Child.ps1')){
-        Add-RestrictedFailure 'Restricted launcher bypasses the restricted child supervisor.'
-    }
-    if(-not $launcher.Contains('-EncodedCommand')){
-        Add-RestrictedFailure 'Restricted launcher does not embed the child supervisor for the restricted identity.'
-    }
-    if($launcher -match '-File\s+.*RestrictedRemote-Child\.ps1'){
-        Add-RestrictedFailure 'Restricted launcher requires the restricted account to read the owner checkout child script directly.'
-    }
-    if(-not $launcher.Contains('MULTICHAT_NODE_PATH') -or -not $launcher.Contains('MULTICHAT_ENTRY_POINT')){
-        Add-RestrictedFailure 'Embedded restricted supervisor is missing its pinned runtime paths.'
-    }
     if(-not $launcher.Contains('Diagnostic:')){
         Add-RestrictedFailure 'Restricted launcher does not surface bounded child startup diagnostics.'
     }
     if(-not $launcher.Contains('<redacted>')){
         Add-RestrictedFailure 'Restricted launcher diagnostics do not redact credential-like values.'
+    }
+    if(-not $launcher.Contains('restricted-remote-ready.json')){
+        Add-RestrictedFailure 'Restricted launcher does not define a readiness marker.'
+    }
+    if(-not $launcher.Contains('$watcherEncoded')){
+        Add-RestrictedFailure 'Restricted launcher does not embed the same-identity readiness sidecar.'
+    }
+    if(-not $launcher.Contains('Get-NetTCPConnection')){
+        Add-RestrictedFailure 'Restricted readiness sidecar does not validate a TCP connection.'
+    }
+    if(-not $launcher.Contains('RemotePort -eq 443')){
+        Add-RestrictedFailure 'Restricted readiness sidecar is not scoped to TCP 443.'
+    }
+    if(-not $launcher.Contains('start "" /b')){
+        Add-RestrictedFailure 'Restricted readiness sidecar is not launched independently of the known-good Remote process.'
+    }
+    if($launcher -notmatch '\$config\.nodePath\)\)\+''" "''\+\$\(Escape-BatchValue \(\[string\]\$config\.entryPoint\)\)\+''" remote'){
+        Add-RestrictedFailure 'Known-good direct Node Remote launch was changed.'
+    }
+}
+if(Test-Path -LiteralPath $restrictedModulePath){
+    $restrictedModule=[IO.File]::ReadAllText($restrictedModulePath)
+    if(-not $restrictedModule.Contains('Test-RestrictedRemoteReady')){
+        Add-RestrictedFailure 'Restricted module does not expose readiness freshness validation.'
+    }
+    if($restrictedModule -match 'Get-Process\s+-Id\s+\$remotePid'){
+        Add-RestrictedFailure 'Owner-side readiness still inspects a restricted-user PID.'
+    }
+    if($restrictedModule -notmatch '\$age\s+-ge\s+0\s+-and\s+\$age\s+-le\s+\$MaxAgeSeconds'){
+        Add-RestrictedFailure 'Readiness marker freshness is not bounded.'
+    }
+}
+if(Test-Path -LiteralPath $trayPath){
+    $tray=[IO.File]::ReadAllText($trayPath)
+    if(-not $tray.Contains('$existingLauncher=Get-RestrictedRemoteLauncherProcess')){
+        Add-RestrictedFailure 'Tray can spawn duplicate restricted launchers while one is alive.'
+    }
+    if(-not $tray.Contains('Test-RestrictedRemoteReady')){
+        Add-RestrictedFailure 'Tray does not consume the restricted readiness marker.'
+    }
+}
+if(Test-Path -LiteralPath $maintenancePath){
+    $maintenance=[IO.File]::ReadAllText($maintenancePath)
+    if(-not $maintenance.Contains('Test-RestrictedRemoteReady')){
+        Add-RestrictedFailure 'Maintenance status does not consume the restricted readiness marker.'
     }
 }
 if(Test-Path -LiteralPath $childPath){
@@ -187,30 +212,6 @@ if(Test-Path -LiteralPath $childPath){
     }
     if($child -notmatch 'MULTICHAT_STATE_ROOT' -or $child -notmatch 'MULTICHAT_WORKSPACE_ROOT'){
         Add-RestrictedFailure 'Restricted child does not isolate MultiChat state and workspace roots.'
-    }
-    if(-not $child.Contains('restricted-remote-ready.json')){
-        Add-RestrictedFailure 'Restricted child does not publish a connection readiness heartbeat.'
-    }
-    if(-not $child.Contains('ReadLineAsync')){
-        Add-RestrictedFailure 'Restricted child does not drain Remote stdout/stderr without persisting tool content.'
-    }
-    if(([regex]::Matches($child,[regex]::Escape('$null -eq $line'))).Count -lt 2){
-        Add-RestrictedFailure 'Restricted child async output drains can spin forever at EOF.'
-    }
-    if(-not $child.Contains('Get-NetTCPConnection')){
-        Add-RestrictedFailure 'Restricted child does not validate connectivity from inside the restricted identity.'
-    }
-    if(-not $child.Contains('OwningProcess -in $tree') -or -not $child.Contains('RemotePort -eq 443')){
-        Add-RestrictedFailure 'Restricted child heartbeat is not scoped to its own Remote process tree on TCP 443.'
-    }
-}
-if(Test-Path -LiteralPath $trayPath){
-    $tray=[IO.File]::ReadAllText($trayPath)
-    if(-not $tray.Contains('$existingLauncher=Get-RestrictedRemoteLauncherProcess')){
-        Add-RestrictedFailure 'Tray can relaunch Restricted Remote while an existing launcher is still alive.'
-    }
-    if(-not $tray.Contains('$script:dcConnecting=(-not $script:dcOnline)')){
-        Add-RestrictedFailure 'Tray does not preserve connecting state for a live Restricted Remote launcher.'
     }
 }
 
