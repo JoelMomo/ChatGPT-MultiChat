@@ -1,16 +1,20 @@
 param(
     [Parameter(Mandatory)][int]$ParentPid,
-    [string]$ModulePath=(Join-Path $PSScriptRoot 'RestrictedRemote.psm1')
+    [string]$ModulePath
 )
 
 $ErrorActionPreference='Stop'
+$root=$PSScriptRoot
+if(-not $ModulePath){
+    $ModulePath=Join-Path $root 'RestrictedRemote.psm1'
+}
 Import-Module $ModulePath -Force -DisableNameChecking
 $config=Get-RestrictedRemoteConfig
 if(-not $config){throw 'Restricted Remote is not enabled.'}
 $credential=Get-RestrictedRemoteCredential -Config $config
 $securityRoot=Get-RestrictedRemoteSecurityRoot
 $killSwitch=Join-Path $securityRoot 'desktop-commander.disabled'
-$childScript=Join-Path $PSScriptRoot 'RestrictedRemote-Child.ps1'
+$childScript=Join-Path $root 'RestrictedRemote-Child.ps1'
 
 Add-Type -TypeDefinition @'
 using System;
