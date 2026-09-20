@@ -156,6 +156,9 @@ $job=[IntPtr]::Zero
 $childProcessHandle=[IntPtr]::Zero
 $childThreadHandle=[IntPtr]::Zero
 $childPid=0
+$watcherProcessHandle=[IntPtr]::Zero
+$watcherThreadHandle=[IntPtr]::Zero
+$watcherPid=0
 $failed=$false
 try{
     Write-RestrictedRemoteStatus -State 'STARTING' -LauncherPid $PID
@@ -276,9 +279,6 @@ Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
         'set "GIT_TERMINAL_PROMPT=0"',
         'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
         '"%SystemRoot%\\System32\\ping.exe" -n 2 127.0.0.1 >nul',
-        ('set "MULTICHAT_READY_PATH='+$(Escape-BatchValue $readyPath)+'"'),
-        ('set "MULTICHAT_ENTRY_POINT='+$(Escape-BatchValue ([string]$config.entryPoint))+'"'),
-        ('start "" /b "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand '+$watcherEncoded+' >nul 2>&1'),
         ('"'+$(Escape-BatchValue ([string]$config.nodePath))+'" "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" remote 1>"'+$(Escape-BatchValue $childStdout)+'" 2>"'+$(Escape-BatchValue $childStderr)+'"'),
         'set "rc=%errorlevel%"',
         'del /q "%USERPROFILE%\\.claude-server-commander\\claude_tool_call*.log" >nul 2>&1',
@@ -396,6 +396,97 @@ Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
         throw "Could not resume Restricted Remote bootstrap (Win32 $win32Error)."
     }
 
+    # Launch the readiness watcher as its own native process under the same
+    # restricted Windows identity. Do not spawn it through cmd.exe: the stable
+    # Remote bootstrap uses CREATE_NO_WINDOW, where cmd's START semantics are
+    # not reliable enough for the sidecar. Failure here is non-fatal; the Remote
+    # remains usable and the owner tray can fall back to its legacy readiness
+    # heuristic.
+    try{
+        $watcherEnvironment=[ordered]@{}
+        foreach($item in $cleanEnvironment.GetEnumerator()){
+            $watcherEnvironment[[string]$item.Key]=[string]$item.Value
+        }
+        $watcherEnvironment['MULTICHAT_READY_PATH']=$readyPath
+        $watcherEnvironment['MULTICHAT_ENTRY_POINT']=[string]$config.entryPoint
+        $watcherEnvironment['MULTICHAT_WATCH_BOOTSTRAP_PID']=[string]$childPid
+        $watcherEnvironmentText=(
+            @($watcherEnvironment.GetEnumerator()|Sort-Object Key|ForEach-Object{
+                [string]$_.Key+'='+[string]$_.Value
+            }) -join [char]0
+        )+[char]0+[char]0
+        $watcherEnvironmentBytes=[Text.Encoding]::Unicode.GetBytes($watcherEnvironmentText)
+        $watcherEnvironmentPtr=[Runtime.InteropServices.Marshal]::AllocHGlobal($watcherEnvironmentBytes.Length)
+        $watcherPasswordBstr=[IntPtr]::Zero
+        try{
+            [Runtime.InteropServices.Marshal]::Copy(
+                $watcherEnvironmentBytes,0,$watcherEnvironmentPtr,$watcherEnvironmentBytes.Length
+            )
+            $watcherPasswordBstr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($credential.Password)
+            $watcherPlainPassword=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($watcherPasswordBstr)
+
+            $watcherStartup=New-Object MultiChatRestrictedJob+STARTUPINFO
+            $watcherStartup.cb=[Runtime.InteropServices.Marshal]::SizeOf([type][MultiChatRestrictedJob+STARTUPINFO])
+            $watcherStartup.dwFlags=0x00000001
+            $watcherStartup.wShowWindow=0
+            $watcherInfo=New-Object MultiChatRestrictedJob+PROCESS_INFORMATION
+            $watcherCommandLine=New-Object Text.StringBuilder
+            [void]$watcherCommandLine.Append(
+                '"'+$powershellPath+'" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand '+$watcherEncoded
+            )
+
+            $watcherCreated=[MultiChatRestrictedJob]::CreateProcessWithLogonW(
+                $logonUser,
+                $logonDomain,
+                $watcherPlainPassword,
+                [uint32]$LOGON_WITH_PROFILE,
+                $powershellPath,
+                $watcherCommandLine,
+                [uint32]$creationFlags,
+                $watcherEnvironmentPtr,
+                [string]$config.stateRoot,
+                [ref]$watcherStartup,
+                [ref]$watcherInfo
+            )
+            if(-not $watcherCreated){
+                $watcherError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                throw "Could not create Restricted Remote readiness watcher (Win32 $watcherError)."
+            }
+            $watcherProcessHandle=$watcherInfo.hProcess
+            $watcherThreadHandle=$watcherInfo.hThread
+            $watcherPid=[int]$watcherInfo.dwProcessId
+        }finally{
+            $watcherPlainPassword=$null
+            if($watcherPasswordBstr -ne [IntPtr]::Zero){
+                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($watcherPasswordBstr)
+            }
+            if($watcherEnvironmentPtr -ne [IntPtr]::Zero){
+                [Runtime.InteropServices.Marshal]::FreeHGlobal($watcherEnvironmentPtr)
+            }
+        }
+
+        if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$watcherProcessHandle)){
+            $watcherError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "Could not place Restricted Remote readiness watcher in its containment job (Win32 $watcherError)."
+        }
+        $watcherResume=[MultiChatRestrictedJob]::ResumeThread($watcherThreadHandle)
+        if($watcherResume -eq 0xFFFFFFFF){
+            $watcherError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "Could not resume Restricted Remote readiness watcher (Win32 $watcherError)."
+        }
+    }catch{
+        Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+        if($watcherThreadHandle -ne [IntPtr]::Zero){
+            [void][MultiChatRestrictedJob]::CloseHandle($watcherThreadHandle)
+            $watcherThreadHandle=[IntPtr]::Zero
+        }
+        if($watcherProcessHandle -ne [IntPtr]::Zero){
+            [void][MultiChatRestrictedJob]::CloseHandle($watcherProcessHandle)
+            $watcherProcessHandle=[IntPtr]::Zero
+        }
+        $watcherPid=0
+    }
+
     Write-RestrictedRemoteStatus -State 'RUNNING' -LauncherPid $PID -ChildPid $childPid
     while($true){
         Start-Sleep -Milliseconds 500
@@ -441,6 +532,12 @@ Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
 }finally{
     if($job -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::TerminateJobObject($job,0)
+    }
+    if($watcherThreadHandle -ne [IntPtr]::Zero){
+        [void][MultiChatRestrictedJob]::CloseHandle($watcherThreadHandle)
+    }
+    if($watcherProcessHandle -ne [IntPtr]::Zero){
+        [void][MultiChatRestrictedJob]::CloseHandle($watcherProcessHandle)
     }
     if($childThreadHandle -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::CloseHandle($childThreadHandle)
