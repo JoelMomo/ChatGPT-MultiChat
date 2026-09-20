@@ -247,6 +247,18 @@ function Start-RemoteCommanderHidden {
         return $false
     }
     if(Test-RestrictedRemoteEnabled){
+        $existingLauncher=Get-RestrictedRemoteLauncherProcess
+        if($existingLauncher){
+            # Do not spawn duplicate restricted launchers merely because the
+            # dashboard has not yet observed readiness. The restricted remote
+            # process owns its reconnect lifecycle and may need more than the
+            # dashboard retry interval to establish or restore the cloud link.
+            $script:dcOnline=Test-RemoteCommanderReady
+            $script:dcChecked=$true
+            $script:dcConnecting=(-not $script:dcOnline)
+            return $true
+        }
+
         $launcherScript=Join-Path $root 'RestrictedRemote-Launcher.ps1'
         if(-not(Test-Path -LiteralPath $launcherScript)){
             $script:dcConnecting=$false
