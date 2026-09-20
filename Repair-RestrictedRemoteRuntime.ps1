@@ -112,6 +112,19 @@ if(-not(Test-Administrator)){
     exit $exitCode
 }
 
+$repairResultPath=Join-Path (Get-RestrictedRemoteSecurityRoot) 'restricted-remote-runtime-repair.json'
+trap {
+    try{
+        $failure=[ordered]@{
+            success=$false
+            error=$_.Exception.Message
+            repairedAt=(Get-Date).ToString('o')
+        }
+        [IO.File]::WriteAllText($repairResultPath,($failure|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
+    }catch{}
+    break
+}
+
 $config=Get-RestrictedRemoteInstalledConfig
 if(-not $config){throw 'Restricted Remote is not installed.'}
 if(-not(Test-RestrictedRemoteInstallMatches)){throw 'Restricted Remote install root does not match this checkout.'}
@@ -167,8 +180,7 @@ $result=[ordered]@{
     enabled=[bool]$config.enabled
     repairedAt=(Get-Date).ToString('o')
 }
-$resultPath=Join-Path (Get-RestrictedRemoteSecurityRoot) 'restricted-remote-runtime-repair.json'
-[IO.File]::WriteAllText($resultPath,($result|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($repairResultPath,($result|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
 
 Write-Host 'Restricted Remote runtime repaired.' -ForegroundColor Green
 Write-Host ('Runtime: '+$installed.Root)
