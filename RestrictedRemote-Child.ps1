@@ -36,10 +36,64 @@ foreach($dir in @($env:APPDATA,$env:LOCALAPPDATA,$env:TEMP)){
 if(-not(Test-Path -LiteralPath $NodePath)){throw 'Node.js executable is missing.'}
 if(-not(Test-Path -LiteralPath $EntryPoint)){throw 'Restricted Remote entry point is missing.'}
 
+$readyPath=Join-Path $env:MULTICHAT_STATE_ROOT 'restricted-remote-ready.json'
+Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+
+function Write-ReadyMarker {
+    param([int]$RemotePid)
+    $payload=[ordered]@{
+        schemaVersion=1
+        state='CONNECTED'
+        remotePid=$RemotePid
+        updatedAt=(Get-Date).ToString('o')
+    }
+    $tmp=$readyPath+'.tmp'
+    [IO.File]::WriteAllText($tmp,($payload|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $readyPath -Force
+}
+
+function Get-ChildProcessTreeIds {
+    param([int]$RootPid)
+    $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Select-Object ProcessId,ParentProcessId)
+    $ids=New-Object Collections.Generic.List[int]
+    [void]$ids.Add($RootPid)
+    for($pass=0;$pass -lt 8;$pass++){
+        $added=$false
+        foreach($proc in $all){
+            if($ids.Contains([int]$proc.ParentProcessId) -and -not $ids.Contains([int]$proc.ProcessId)){
+                [void]$ids.Add([int]$proc.ProcessId)
+                $added=$true
+            }
+        }
+        if(-not $added){break}
+    }
+    return @($ids)
+}
+
+$node=$null
 try{
-    & $NodePath $EntryPoint remote
-    exit $LASTEXITCODE
+    $node=Start-Process -FilePath $NodePath -ArgumentList @($EntryPoint,'remote') -NoNewWindow -PassThru
+    while($true){
+        $node.Refresh()
+        if($node.HasExited){break}
+
+        $tree=@(Get-ChildProcessTreeIds -RootPid $node.Id)
+        $connected=@(
+            Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+            Where-Object { $_.OwningProcess -in $tree -and $_.RemotePort -eq 443 }
+        ).Count -gt 0
+
+        if($connected){
+            Write-ReadyMarker -RemotePid $node.Id
+        }else{
+            Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 2
+    }
+    exit $node.ExitCode
 }finally{
+    Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+    if($node){$node.Dispose()}
     $historyRoot=Join-Path $profile '.claude-server-commander'
     if(Test-Path -LiteralPath $historyRoot){
         foreach($file in @(Get-ChildItem -LiteralPath $historyRoot -File -Force -ErrorAction SilentlyContinue|Where-Object{
