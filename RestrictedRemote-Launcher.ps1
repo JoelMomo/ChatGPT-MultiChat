@@ -156,7 +156,7 @@ try{
         'set "GIT_CONFIG_NOSYSTEM=1"',
         'set "GIT_TERMINAL_PROMPT=0"',
         'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
-        '"%SystemRoot%\\System32\\timeout.exe" /t 1 /nobreak >nul',
+        '"%SystemRoot%\\System32\\ping.exe" -n 2 127.0.0.1 >nul',
         ('"'+$(Escape-BatchValue ([string]$config.nodePath))+'" "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" remote'),
         'set "rc=%errorlevel%"',
         'del /q "%USERPROFILE%\\.claude-server-commander\\claude_tool_call*.log" >nul 2>&1',
