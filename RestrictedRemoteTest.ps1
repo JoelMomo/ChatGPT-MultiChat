@@ -30,11 +30,31 @@ foreach($name in @(
     }
 }
 
+$chatMultiPath=Join-Path $root 'ChatMulti.psm1'
+$advancedPath=Join-Path $root 'ChatMulti.Advanced.ps1'
 $installerPath=Join-Path $root 'Install-RestrictedRemote.ps1'
 $repairPath=Join-Path $root 'Repair-RestrictedRemoteRuntime.ps1'
 $activatorPath=Join-Path $root 'Activate-RestrictedRemote.ps1'
 $launcherPath=Join-Path $root 'RestrictedRemote-Launcher.ps1'
 $childPath=Join-Path $root 'RestrictedRemote-Child.ps1'
+if(Test-Path -LiteralPath $chatMultiPath){
+    $chatMulti=[IO.File]::ReadAllText($chatMultiPath)
+    if(-not $chatMulti.Contains('restricted-identities')){
+        Add-RestrictedFailure 'ChatMulti cannot recover restricted context after the MCP safe-environment hop.'
+    }
+    if(-not $chatMulti.Contains('WindowsIdentity]::GetCurrent')){
+        Add-RestrictedFailure 'ChatMulti restricted marker is not bound to the current Windows SID.'
+    }
+    if($chatMulti -notmatch '\$restrictedIsolation=\$script:RestrictedRemoteMode'){
+        Add-RestrictedFailure 'Managed sessions do not use the resolved restricted context.'
+    }
+}
+if(Test-Path -LiteralPath $advancedPath){
+    $advanced=[IO.File]::ReadAllText($advancedPath)
+    if($advanced -match 'MULTICHAT_RESTRICTED_REMOTE'){
+        Add-RestrictedFailure 'Advanced project checks still depend directly on a stripped MULTICHAT environment variable.'
+    }
+}
 if(Test-Path -LiteralPath $installerPath){
     $installer=[IO.File]::ReadAllText($installerPath)
     if($installer -match '(?s)gitDir.*\(OI\)\(CI\)M'){
@@ -45,6 +65,9 @@ if(Test-Path -LiteralPath $installerPath){
     }
     if(-not $installer.Contains('Join-Path $env:ProgramData ''ChatGPT-MultiChat\restricted-runtime''')){
         Add-RestrictedFailure 'Installer leaves the restricted runtime under the interactive user profile.'
+    }
+    if(-not $installer.Contains('restricted-identities')){
+        Add-RestrictedFailure 'Installer does not provision the SID-bound restricted identity marker.'
     }
     if($installer -match 'Invoke-IcaclsChecked @\(\$runtime\.Root,''/grant'''){
         Add-RestrictedFailure 'Installer grants the restricted account direct access to the interactive user npm cache.'
@@ -61,6 +84,9 @@ if(Test-Path -LiteralPath $repairPath){
     }
     if(-not $repair.Contains('Get-RestrictedRemoteInstalledConfig')){
         Add-RestrictedFailure 'Runtime repair does not preserve the installed Restricted Remote configuration.'
+    }
+    if(-not $repair.Contains('restricted-identities')){
+        Add-RestrictedFailure 'Runtime repair does not provision the SID-bound restricted identity marker.'
     }
     if($repair -match '(?i)Remove-Item.+\.desktop-commander-device'){
         Add-RestrictedFailure 'Runtime repair can remove Restricted Remote authorization.'
