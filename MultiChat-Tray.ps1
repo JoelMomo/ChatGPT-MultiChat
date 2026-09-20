@@ -185,14 +185,9 @@ function Test-RemoteCommanderReady {
             if(-not $status -or [string]$status.state -ne 'RUNNING'){return $false}
             $launcherPid=[int]$status.launcherPid
             if($launcherPid -le 0 -or -not(Get-Process -Id $launcherPid -ErrorAction SilentlyContinue)){return $false}
-
-            # Prefer the heartbeat emitted from inside the restricted identity.
-            # Cross-user TCP ownership queries can be incomplete for a standard
-            # interactive token even when the remote channel is actually online.
             if(Get-Command Test-RestrictedRemoteReady -ErrorAction SilentlyContinue){
                 if(Test-RestrictedRemoteReady){return $true}
             }
-
             $pids=@(Get-ProcessTreeIds -RootPid $launcherPid)
             return @(
                 Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
@@ -249,16 +244,11 @@ function Start-RemoteCommanderHidden {
     if(Test-RestrictedRemoteEnabled){
         $existingLauncher=Get-RestrictedRemoteLauncherProcess
         if($existingLauncher){
-            # Do not spawn duplicate restricted launchers merely because the
-            # dashboard has not yet observed readiness. The restricted remote
-            # process owns its reconnect lifecycle and may need more than the
-            # dashboard retry interval to establish or restore the cloud link.
             $script:dcOnline=Test-RemoteCommanderReady
             $script:dcChecked=$true
             $script:dcConnecting=(-not $script:dcOnline)
             return $true
         }
-
         $launcherScript=Join-Path $root 'RestrictedRemote-Launcher.ps1'
         if(-not(Test-Path -LiteralPath $launcherScript)){
             $script:dcConnecting=$false
