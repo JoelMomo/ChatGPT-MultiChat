@@ -42,7 +42,9 @@ try{
     $env:MULTICHAT_ENTRY_POINT=$entryPoint
     $env:MULTICHAT_WATCH_BOOTSTRAP_PID=[string]$bootstrapPid
 
-    $ps=Join-Path ([Environment]::GetEnvironmentVariable('SystemRoot','Machine')) 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $systemRoot=if($env:SystemRoot){$env:SystemRoot}else{[Environment]::GetEnvironmentVariable('SystemRoot','Machine')}
+    if(-not $systemRoot){throw 'SystemRoot is unavailable in the live probe.'}
+    $ps=Join-Path $systemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $watcherProcess=Start-Process -FilePath $ps -ArgumentList @(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
         '-EncodedCommand',$watcherEncoded
