@@ -68,6 +68,13 @@ if(-not(Test-Path -LiteralPath $currentAuth)){
     throw 'Current Remote Desktop Commander authorization is missing; authorize the normal mode before migration.'
 }
 
+# Stop the tray before touching authorization. Otherwise a failed migration can
+# cause the normal-user tray to immediately spawn replacement Remote processes.
+foreach($proc in @(Get-CimInstance Win32_Process|Where-Object{
+    $_.CommandLine -match 'MultiChat-Tray\.ps1'
+})){
+    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+}
 foreach($proc in @(Get-CimInstance Win32_Process|Where-Object{
     $_.CommandLine -match 'desktop-commander' -and $_.CommandLine -match '\bremote\b'
 })){
@@ -75,38 +82,64 @@ foreach($proc in @(Get-CimInstance Win32_Process|Where-Object{
 }
 Start-Sleep -Milliseconds 700
 
-New-Item -ItemType Directory -Path $restrictedAuthRoot -Force|Out-Null
-Copy-Item -LiteralPath $currentAuth -Destination $restrictedAuth -Force
-Invoke-IcaclsChecked @($restrictedAuthRoot,'/inheritance:r')
-Invoke-IcaclsChecked @($restrictedAuthRoot,'/grant:r',('*'+[string]$config.userSid+':(OI)(CI)F'))
-Invoke-IcaclsChecked @($restrictedAuthRoot,'/grant','*S-1-5-18:(OI)(CI)F')
-Invoke-IcaclsChecked @($restrictedAuthRoot,'/grant','*S-1-5-32-544:(OI)(CI)F')
-Invoke-IcaclsChecked @($restrictedAuth,'/inheritance:e')
-
-Remove-Item -LiteralPath $currentAuth -Force
-$config.enabled=$true
-$config.activatedAt=(Get-Date).ToString('o')
-[IO.File]::WriteAllText($configPath,($config|ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false)))
 $securityRoot=Get-RestrictedRemoteSecurityRoot
 $killSwitch=Join-Path $securityRoot 'desktop-commander.disabled'
-Remove-Item -LiteralPath $killSwitch -Force -ErrorAction SilentlyContinue
+$configTemp=$configPath+'.activate.tmp'
+$authCopied=$false
+$currentAuthRemoved=$false
 
-foreach($proc in @(Get-CimInstance Win32_Process|Where-Object{
-    $_.CommandLine -match 'MultiChat-Tray\.ps1'
-})){
-    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
-}
+try{
+    New-Item -ItemType Directory -Path $restrictedAuthRoot -Force|Out-Null
+    Copy-Item -LiteralPath $currentAuth -Destination $restrictedAuth -Force
+    $authCopied=$true
+    Invoke-IcaclsChecked @($restrictedAuthRoot,'/inheritance:r')
+    Invoke-IcaclsChecked @($restrictedAuthRoot,'/grant:r',('*'+[string]$config.userSid+':(OI)(CI)F'))
+    Invoke-IcaclsChecked @($restrictedAuthRoot,'/grant','*S-1-5-18:(OI)(CI)F')
+    Invoke-IcaclsChecked @($restrictedAuthRoot,'/grant','*S-1-5-32-544:(OI)(CI)F')
+    Invoke-IcaclsChecked @($restrictedAuth,'/inheritance:e')
 
-$result=[ordered]@{
-    success=$true
-    mode='restricted-user'
-    userName=[string]$config.userName
-    activatedAt=(Get-Date).ToString('o')
-    authorizationTransferred=(Test-Path -LiteralPath $restrictedAuth)
-    currentUserAuthorizationRemoved=(-not(Test-Path -LiteralPath $currentAuth))
+    $config.enabled=$true
+    $activatedAt=(Get-Date).ToString('o')
+    $activatedProperty=$config.PSObject.Properties['activatedAt']
+    if($activatedProperty){
+        $activatedProperty.Value=$activatedAt
+    }else{
+        $config|Add-Member -NotePropertyName activatedAt -NotePropertyValue $activatedAt
+    }
+
+    [IO.File]::WriteAllText($configTemp,($config|ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $configTemp -Destination $configPath -Force
+
+    Remove-Item -LiteralPath $currentAuth -Force
+    $currentAuthRemoved=$true
+    Remove-Item -LiteralPath $killSwitch -Force -ErrorAction SilentlyContinue
+
+    $result=[ordered]@{
+        success=$true
+        mode='restricted-user'
+        userName=[string]$config.userName
+        activatedAt=$activatedAt
+        authorizationTransferred=(Test-Path -LiteralPath $restrictedAuth)
+        currentUserAuthorizationRemoved=(-not(Test-Path -LiteralPath $currentAuth))
+    }
+    $resultPath=Join-Path $securityRoot 'restricted-remote-activation-result.json'
+    [IO.File]::WriteAllText($resultPath,($result|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
+}catch{
+    Remove-Item -LiteralPath $configTemp -Force -ErrorAction SilentlyContinue
+
+    if($currentAuthRemoved -and (Test-Path -LiteralPath $restrictedAuth)){
+        Copy-Item -LiteralPath $restrictedAuth -Destination $currentAuth -Force -ErrorAction SilentlyContinue
+    }
+    if($authCopied){
+        Remove-Item -LiteralPath $restrictedAuth -Force -ErrorAction SilentlyContinue
+    }
+
+    $config.enabled=$false
+    $activatedProperty=$config.PSObject.Properties['activatedAt']
+    if($activatedProperty){$config.PSObject.Properties.Remove('activatedAt')}
+    [IO.File]::WriteAllText($configPath,($config|ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false)))
+    throw
 }
-$resultPath=Join-Path $securityRoot 'restricted-remote-activation-result.json'
-[IO.File]::WriteAllText($resultPath,($result|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
 
 Write-Host 'Restricted Remote is activated.' -ForegroundColor Green
 Write-Host 'MultiChat was stopped so the new execution identity can take effect.'

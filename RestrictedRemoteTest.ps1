@@ -30,6 +30,7 @@ foreach($name in @(
 }
 
 $installerPath=Join-Path $root 'Install-RestrictedRemote.ps1'
+$activatorPath=Join-Path $root 'Activate-RestrictedRemote.ps1'
 $launcherPath=Join-Path $root 'RestrictedRemote-Launcher.ps1'
 $childPath=Join-Path $root 'RestrictedRemote-Child.ps1'
 if(Test-Path -LiteralPath $installerPath){
@@ -43,6 +44,20 @@ if(Test-Path -LiteralPath $installerPath){
     $descriptionMatch=[regex]::Match($installer,"\$accountDescription='([^']*)'")
     if(-not $descriptionMatch.Success -or $descriptionMatch.Groups[1].Value.Length -gt 48){
         Add-RestrictedFailure 'Restricted Windows account description exceeds the 48-character LocalAccounts limit.'
+    }
+}
+if(Test-Path -LiteralPath $activatorPath){
+    $activator=[IO.File]::ReadAllText($activatorPath)
+    if($activator -match '\$config\.activatedAt\s*='){
+        Add-RestrictedFailure 'Activator assigns missing PSCustomObject activatedAt property directly.'
+    }
+    if($activator -notmatch "Add-Member -NotePropertyName activatedAt"){
+        Add-RestrictedFailure 'Activator does not create activatedAt safely on first activation.'
+    }
+    $trayStop=$activator.IndexOf('MultiChat-Tray\.ps1')
+    $authRemove=$activator.IndexOf('Remove-Item -LiteralPath $currentAuth -Force')
+    if($trayStop -lt 0 -or $authRemove -lt 0 -or $trayStop -gt $authRemove){
+        Add-RestrictedFailure 'Activator can remove normal authorization before stopping the tray.'
     }
 }
 if(Test-Path -LiteralPath $launcherPath){
