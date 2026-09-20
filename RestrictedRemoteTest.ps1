@@ -168,8 +168,17 @@ if(Test-Path -LiteralPath $launcherPath){
     if(-not $launcher.Contains('RemotePort -eq 443')){
         Add-RestrictedFailure 'Restricted readiness sidecar is not scoped to TCP 443.'
     }
-    if(-not $launcher.Contains('start "" /b')){
-        Add-RestrictedFailure 'Restricted readiness sidecar is not launched independently of the known-good Remote process.'
+    if(-not $launcher.Contains('$watcherCreated=[MultiChatRestrictedJob]::CreateProcessWithLogonW')){
+        Add-RestrictedFailure 'Restricted readiness sidecar is not launched natively under the restricted identity.'
+    }
+    if(-not $launcher.Contains('MULTICHAT_WATCH_BOOTSTRAP_PID')){
+        Add-RestrictedFailure 'Restricted readiness watcher is not bound to the known-good bootstrap PID.'
+    }
+    if($launcher.Contains('start "" /b')){
+        Add-RestrictedFailure 'Restricted readiness sidecar still depends on cmd START inside the no-window bootstrap.'
+    }
+    if(-not $launcher.Contains('Could not create Restricted Remote readiness watcher')){
+        Add-RestrictedFailure 'Restricted readiness watcher has no bounded native startup diagnostic.'
     }
     if($launcher -notmatch '\$config\.nodePath\)\)\+''" "''\+\$\(Escape-BatchValue \(\[string\]\$config\.entryPoint\)\)\+''" remote'){
         Add-RestrictedFailure 'Known-good direct Node Remote launch was changed.'
