@@ -37,7 +37,9 @@ setInterval(() => {}, 1000);
 '@ | Set-Content -LiteralPath $fakeJs -Encoding UTF8
 
     $node=(Get-Command node.exe -ErrorAction Stop).Source
-    $ps="$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $systemRoot=if($env:SystemRoot){$env:SystemRoot}else{[Environment]::GetEnvironmentVariable('SystemRoot','Machine')}
+    $ps=Join-Path $systemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $cmd=Join-Path $systemRoot 'System32\cmd.exe'
     $server=Start-Process -FilePath $node -ArgumentList @('"'+$serverJs+'"') -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds 500
 
@@ -49,7 +51,7 @@ setInterval(() => {}, 1000);
         ('"'+$node+'" "'+$fakeJs+'" remote >nul 2>&1')
     )
     [IO.File]::WriteAllLines($cmdFile,$lines,(New-Object Text.UTF8Encoding($false)))
-    $bootstrap=Start-Process -FilePath $env:ComSpec -ArgumentList @('/d','/c','"'+$cmdFile+'"') -WindowStyle Hidden -PassThru
+    $bootstrap=Start-Process -FilePath $cmd -ArgumentList @('/d','/c','"'+$cmdFile+'"') -WindowStyle Hidden -PassThru
 
     $deadline=(Get-Date).AddSeconds(8)
     while((Get-Date) -lt $deadline -and -not(Test-Path -LiteralPath $ready)){
