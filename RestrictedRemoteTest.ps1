@@ -13,6 +13,7 @@ foreach($name in @(
     'RestrictedRemote-Child.ps1',
     'RestrictedRemote-Revoke.ps1',
     'Install-RestrictedRemote.ps1',
+    'Repair-RestrictedRemoteRuntime.ps1',
     'Activate-RestrictedRemote.ps1',
     'Uninstall-RestrictedRemote.ps1',
     'Import-RestrictedRemoteChanges.ps1'
@@ -30,6 +31,7 @@ foreach($name in @(
 }
 
 $installerPath=Join-Path $root 'Install-RestrictedRemote.ps1'
+$repairPath=Join-Path $root 'Repair-RestrictedRemoteRuntime.ps1'
 $activatorPath=Join-Path $root 'Activate-RestrictedRemote.ps1'
 $launcherPath=Join-Path $root 'RestrictedRemote-Launcher.ps1'
 $childPath=Join-Path $root 'RestrictedRemote-Child.ps1'
@@ -41,9 +43,27 @@ if(Test-Path -LiteralPath $installerPath){
     if($installer -notmatch 'shared clones'){
         Add-RestrictedFailure 'Installer does not declare shared-clone Git isolation.'
     }
+    if(-not $installer.Contains("Join-Path $env:ProgramData 'ChatGPT-MultiChat\restricted-runtime'")){
+        Add-RestrictedFailure 'Installer leaves the restricted runtime under the interactive user profile.'
+    }
+    if($installer -match "Invoke-IcaclsChecked @\(\$runtime\.Root,'/grant'"){
+        Add-RestrictedFailure 'Installer grants the restricted account direct access to the interactive user npm cache.'
+    }
     $descriptionMatch=[regex]::Match($installer,"\$accountDescription='([^']*)'")
     if(-not $descriptionMatch.Success -or $descriptionMatch.Groups[1].Value.Length -gt 48){
         Add-RestrictedFailure 'Restricted Windows account description exceeds the 48-character LocalAccounts limit.'
+    }
+}
+if(Test-Path -LiteralPath $repairPath){
+    $repair=[IO.File]::ReadAllText($repairPath)
+    if(-not $repair.Contains("Join-Path $env:ProgramData 'ChatGPT-MultiChat\restricted-runtime'")){
+        Add-RestrictedFailure 'Runtime repair does not migrate the reviewed runtime out of the interactive user profile.'
+    }
+    if(-not $repair.Contains('Get-RestrictedRemoteInstalledConfig')){
+        Add-RestrictedFailure 'Runtime repair does not preserve the installed Restricted Remote configuration.'
+    }
+    if($repair -match '(?i)Remove-Item.+\.desktop-commander-device'){
+        Add-RestrictedFailure 'Runtime repair can remove Restricted Remote authorization.'
     }
 }
 if(Test-Path -LiteralPath $activatorPath){
