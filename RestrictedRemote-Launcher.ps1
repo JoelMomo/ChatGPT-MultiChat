@@ -193,13 +193,43 @@ try{
     $childStdout=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stdout.tmp'
     $childStderr=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stderr.tmp'
     $readyPath=Join-Path ([string]$config.stateRoot) 'restricted-remote-ready.json'
-    Remove-Item -LiteralPath $childStdout,$childStderr,$readyPath -Force -ErrorAction SilentlyContinue
+    $readyDiagnosticPath=Join-Path ([string]$config.stateRoot) 'restricted-remote-ready-diagnostic.json'
+    Remove-Item -LiteralPath $childStdout,$childStderr,$readyPath,$readyDiagnosticPath -Force -ErrorAction SilentlyContinue
     # Keep the known-good Remote process launch unchanged. A tiny sidecar runs
     # under the same restricted identity and publishes only a freshness marker.
     $watcher=@'
 $ErrorActionPreference='SilentlyContinue'
 $readyPath=$env:MULTICHAT_READY_PATH
+$diagnosticPath=$env:MULTICHAT_READY_DIAGNOSTIC_PATH
 $entryPoint=$env:MULTICHAT_ENTRY_POINT
+function Write-Diagnostic {
+    param(
+        [string]$State,
+        [int]$BootstrapPid=0,
+        [int]$RemotePid=0,
+        [int]$TreeCount=0,
+        [int]$Tcp443Count=0,
+        [string]$Message=''
+    )
+    if(-not $diagnosticPath){return}
+    $payload=[ordered]@{
+        schemaVersion=1
+        state=$State
+        watcherPid=$PID
+        bootstrapPid=$BootstrapPid
+        remotePid=$RemotePid
+        treeCount=$TreeCount
+        tcp443Count=$Tcp443Count
+        message=$Message
+        updatedAt=(Get-Date).ToString('o')
+    }
+    try{
+        $tmp=$diagnosticPath+'.tmp'
+        [IO.File]::WriteAllText($tmp,($payload|ConvertTo-Json -Depth 4),(New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $diagnosticPath -Force
+    }catch{}
+}
+Write-Diagnostic -State 'STARTED'
 $self=Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $PID)
 $bootstrapPid=if($env:MULTICHAT_WATCH_BOOTSTRAP_PID){
     [int]$env:MULTICHAT_WATCH_BOOTSTRAP_PID
@@ -239,17 +269,20 @@ while($bootstrapPid -gt 0 -and (Get-Process -Id $bootstrapPid -ErrorAction Silen
         [string]$_.CommandLine -like ('*'+$entryPoint+'* remote*')
     }|Select-Object -First 1)
     $remotePid=if($remote){[int]$remote.ProcessId}else{0}
-    $connected=$false
+    $tcp443Count=0
     if($remotePid -gt 0){
-        $connected=@(
+        $tcp443Count=@(
             Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
             Where-Object { $_.OwningProcess -eq $remotePid -and $_.RemotePort -eq 443 }
-        ).Count -gt 0
+        ).Count
     }
+    $connected=$tcp443Count -gt 0
+    Write-Diagnostic -State $(if($connected){'CONNECTED'}elseif($remotePid -gt 0){'REMOTE_FOUND'}else{'OBSERVING'}) -BootstrapPid $bootstrapPid -RemotePid $remotePid -TreeCount $ids.Count -Tcp443Count $tcp443Count
     if($connected){Write-Ready -RemotePid $remotePid}
     else{Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue}
     Start-Sleep -Seconds 2
 }
+Write-Diagnostic -State 'STOPPED' -BootstrapPid $bootstrapPid
 Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
 '@
     $watcherEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($watcher))
@@ -396,6 +429,31 @@ Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
         throw "Could not resume Restricted Remote bootstrap (Win32 $win32Error)."
     }
 
+    function Write-LauncherReadyDiagnostic {
+        param(
+            [Parameter(Mandatory)][string]$State,
+            [int]$WatcherPid=0,
+            [string]$Message=''
+        )
+        try{
+            if($Message.Length -gt 500){$Message=$Message.Substring(0,500)}
+            $payload=[ordered]@{
+                schemaVersion=1
+                state=$State
+                watcherPid=$WatcherPid
+                bootstrapPid=$childPid
+                remotePid=0
+                treeCount=0
+                tcp443Count=0
+                message=$Message
+                updatedAt=(Get-Date).ToString('o')
+            }
+            $tmp=$readyDiagnosticPath+'.owner.tmp'
+            [IO.File]::WriteAllText($tmp,($payload|ConvertTo-Json -Depth 4),(New-Object Text.UTF8Encoding($false)))
+            Move-Item -LiteralPath $tmp -Destination $readyDiagnosticPath -Force
+        }catch{}
+    }
+
     # Launch the readiness watcher as its own native process under the same
     # restricted Windows identity. Do not spawn it through cmd.exe: the stable
     # Remote bootstrap uses CREATE_NO_WINDOW, where cmd's START semantics are
@@ -403,11 +461,13 @@ Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
     # remains usable and the owner tray can fall back to its legacy readiness
     # heuristic.
     try{
+        Write-LauncherReadyDiagnostic -State 'LAUNCHING'
         $watcherEnvironment=[ordered]@{}
         foreach($item in $cleanEnvironment.GetEnumerator()){
             $watcherEnvironment[[string]$item.Key]=[string]$item.Value
         }
         $watcherEnvironment['MULTICHAT_READY_PATH']=$readyPath
+        $watcherEnvironment['MULTICHAT_READY_DIAGNOSTIC_PATH']=$readyDiagnosticPath
         $watcherEnvironment['MULTICHAT_ENTRY_POINT']=[string]$config.entryPoint
         $watcherEnvironment['MULTICHAT_WATCH_BOOTSTRAP_PID']=[string]$childPid
         $watcherEnvironmentText=(
@@ -455,6 +515,7 @@ Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
             $watcherProcessHandle=$watcherInfo.hProcess
             $watcherThreadHandle=$watcherInfo.hThread
             $watcherPid=[int]$watcherInfo.dwProcessId
+            Write-LauncherReadyDiagnostic -State 'CREATED' -WatcherPid $watcherPid
         }finally{
             $watcherPlainPassword=$null
             if($watcherPasswordBstr -ne [IntPtr]::Zero){
@@ -474,7 +535,9 @@ Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
             $watcherError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
             throw "Could not resume Restricted Remote readiness watcher (Win32 $watcherError)."
         }
+        Write-LauncherReadyDiagnostic -State 'RESUMED' -WatcherPid $watcherPid
     }catch{
+        Write-LauncherReadyDiagnostic -State 'LAUNCH_FAILED' -WatcherPid $watcherPid -Message $_.Exception.Message
         Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
         if($watcherThreadHandle -ne [IntPtr]::Zero){
             [void][MultiChatRestrictedJob]::CloseHandle($watcherThreadHandle)
