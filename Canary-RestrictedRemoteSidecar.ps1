@@ -19,6 +19,7 @@ if(-not $config){throw 'Stable Restricted Remote configuration is not enabled.'}
 
 $statusPath=Get-RestrictedRemoteStatusPath
 $readyPath=Join-Path ([string]$config.stateRoot) 'restricted-remote-ready.json'
+$readyDiagnosticPath=Join-Path ([string]$config.stateRoot) 'restricted-remote-ready-diagnostic.json'
 $stdoutPath=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stdout.tmp'
 $resultPath=Join-Path (Get-RestrictedRemoteSecurityRoot) 'restricted-remote-sidecar-canary.json'
 $restoreSignal=Join-Path $env:TEMP ('multichat-sidecar-restore-'+[guid]::NewGuid().ToString('N')+'.signal')
@@ -113,7 +114,7 @@ try{
     Stop-CanonicalTray
     Stop-RecordedLauncher
     Start-Sleep -Seconds 2
-    Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $readyPath,$readyDiagnosticPath -Force -ErrorAction SilentlyContinue
 
     $trialLauncher=Start-Process powershell.exe -ArgumentList @(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
@@ -136,7 +137,21 @@ try{
         Start-Sleep -Milliseconds 250
     }
     if(-not $running){throw 'Experimental launcher did not reach RUNNING.'}
-    if(-not $ready){throw 'Experimental readiness sidecar did not publish CONNECTED.'}
+    if(-not $ready){
+        $watcherDiagnostic=''
+        if(Test-Path -LiteralPath $readyDiagnosticPath){
+            try{
+                $diag=Get-Content -LiteralPath $readyDiagnosticPath -Raw|ConvertFrom-Json
+                $watcherDiagnostic=('state={0}; watcherPid={1}; bootstrapPid={2}; remotePid={3}; treeCount={4}; tcp443Count={5}; message={6}' -f
+                    [string]$diag.state,[int]$diag.watcherPid,[int]$diag.bootstrapPid,[int]$diag.remotePid,
+                    [int]$diag.treeCount,[int]$diag.tcp443Count,[string]$diag.message)
+            }catch{}
+        }
+        if($watcherDiagnostic){
+            throw ('Experimental readiness sidecar did not publish CONNECTED. Diagnostic: '+$watcherDiagnostic)
+        }
+        throw 'Experimental readiness sidecar did not publish CONNECTED. No watcher diagnostic was produced.'
+    }
 
     $presence=$false
     $deviceReady=$false
@@ -177,9 +192,14 @@ try{
     }catch{}
     Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
 
+    $diagnosticSnapshot=$null
+    if(Test-Path -LiteralPath $readyDiagnosticPath){
+        try{$diagnosticSnapshot=Get-Content -LiteralPath $readyDiagnosticPath -Raw|ConvertFrom-Json}catch{}
+    }
     $payload=[ordered]@{
         success=$success
         detail=$detail
+        watcherDiagnostic=$diagnosticSnapshot
         labHead=(& git -C $labRoot rev-parse --short HEAD 2>$null).Trim()
         canonicalHead=(& git -C $canonicalRoot rev-parse --short HEAD 2>$null).Trim()
         completedAt=(Get-Date).ToString('o')
