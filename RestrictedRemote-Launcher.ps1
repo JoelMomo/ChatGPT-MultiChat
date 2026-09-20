@@ -196,14 +196,14 @@ try{
         [uint32]$child.Id
     )
     if($childJobHandle -eq [IntPtr]::Zero){
-        $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         $exitCode=try{$child.ExitCode}catch{-1}
-        throw "Could not open Restricted Remote bootstrap for containment (Win32 $error, exit $exitCode)."
+        throw "Could not open Restricted Remote bootstrap for containment (Win32 $win32Error, exit $exitCode)."
     }
     if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$childJobHandle)){
-        $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
-        throw "Could not place Restricted Remote in its containment job (Win32 $error)."
+        throw "Could not place Restricted Remote in its containment job (Win32 $win32Error)."
     }
 
     Write-RestrictedRemoteStatus -State 'RUNNING' -LauncherPid $PID -ChildPid $child.Id
