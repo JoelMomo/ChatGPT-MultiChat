@@ -71,29 +71,73 @@ function Get-ChildProcessTreeIds {
 }
 
 $node=$null
+$stdoutTask=$null
+$stderrTask=$null
+$connected=$false
 try{
-    $node=Start-Process -FilePath $NodePath -ArgumentList @($EntryPoint,'remote') -NoNewWindow -PassThru
+    $psi=New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName=$NodePath
+    $escapedEntry=$EntryPoint.Replace('"','\"')
+    $psi.Arguments=('"'+$escapedEntry+'" remote')
+    $psi.WorkingDirectory=Split-Path $EntryPoint -Parent
+    $psi.UseShellExecute=$false
+    $psi.CreateNoWindow=$true
+    $psi.RedirectStandardOutput=$true
+    $psi.RedirectStandardError=$true
+
+    # Preserve only the already-sanitized restricted environment. The remote
+    # process inherits this ProcessStartInfo environment automatically.
+    $node=New-Object Diagnostics.Process
+    $node.StartInfo=$psi
+    if(-not $node.Start()){throw 'Restricted Remote node process did not start.'}
+
+    $stdoutTask=$node.StandardOutput.ReadLineAsync()
+    $stderrTask=$node.StandardError.ReadLineAsync()
+
     while($true){
         $node.Refresh()
-        if($node.HasExited){break}
 
-        $tree=@(Get-ChildProcessTreeIds -RootPid $node.Id)
-        $connected=@(
-            Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-            Where-Object { $_.OwningProcess -in $tree -and $_.RemotePort -eq 443 }
-        ).Count -gt 0
+        # Drain stdout/stderr continuously in memory so Desktop Commander cannot
+        # block on a full pipe. Never persist or echo remote tool arguments/results.
+        while($stdoutTask -and $stdoutTask.IsCompleted){
+            $line=$stdoutTask.Result
+            if($null -eq $line){
+                $stdoutTask=$null
+                break
+            }
+            if($line -match '(?i)Device ready:|Presence tracked|visible as online'){
+                $connected=$true
+            }elseif($line -match '(?i)device.*offline|connection.*closed|disconnected'){
+                $connected=$false
+                Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+            }
+            $stdoutTask=$node.StandardOutput.ReadLineAsync()
+        }
+        while($stderrTask -and $stderrTask.IsCompleted){
+            $null=$stderrTask.Result
+            $stderrTask=$node.StandardError.ReadLineAsync()
+        }
 
         if($connected){
             Write-ReadyMarker -RemotePid $node.Id
-        }else{
-            Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
         }
-        Start-Sleep -Seconds 2
+
+        if($node.HasExited){break}
+        Start-Sleep -Milliseconds 200
     }
+
+    # Drain completion without writing remote output anywhere.
+    try{if($stdoutTask){$null=$stdoutTask.GetAwaiter().GetResult()}}catch{}
+    try{if($stderrTask){$null=$stderrTask.GetAwaiter().GetResult()}}catch{}
     exit $node.ExitCode
 }finally{
     Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
-    if($node){$node.Dispose()}
+    if($node){
+        try{
+            if(-not $node.HasExited){$node.Kill()}
+        }catch{}
+        $node.Dispose()
+    }
     $historyRoot=Join-Path $profile '.claude-server-commander'
     if(Test-Path -LiteralPath $historyRoot){
         foreach($file in @(Get-ChildItem -LiteralPath $historyRoot -File -Force -ErrorAction SilentlyContinue|Where-Object{
