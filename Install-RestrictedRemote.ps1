@@ -71,6 +71,53 @@ function Invoke-IcaclsChecked {
     }
 }
 
+function Install-ReviewedRuntime {
+    param(
+        [Parameter(Mandatory)]$Source,
+        [Parameter(Mandatory)][string]$RestrictedSid
+    )
+
+    $ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $runtimeBase=Join-Path $env:ProgramData 'ChatGPT-MultiChat\restricted-runtime'
+    $target=Join-Path $runtimeBase ('desktop-commander-'+$packageVersion)
+    $stage=$target+'.staging-'+[guid]::NewGuid().ToString('N')
+
+    New-Item -ItemType Directory -Path $runtimeBase -Force|Out-Null
+    Invoke-IcaclsChecked @($runtimeBase,'/inheritance:r')
+    Invoke-IcaclsChecked @($runtimeBase,'/grant:r','*S-1-5-18:(OI)(CI)F')
+    Invoke-IcaclsChecked @($runtimeBase,'/grant','*S-1-5-32-544:(OI)(CI)F')
+    Invoke-IcaclsChecked @($runtimeBase,'/grant',('*'+$ownerSid+':(OI)(CI)RX'))
+    Invoke-IcaclsChecked @($runtimeBase,'/grant',('*'+$RestrictedSid+':(OI)(CI)RX'))
+
+    try{
+        Copy-Item -LiteralPath $Source.Root -Destination $stage -Recurse -Force
+        $lock=Join-Path $stage 'package-lock.json'
+        $entry=Join-Path $stage 'node_modules\@wonderwhy-er\desktop-commander\dist\index.js'
+        if(-not(Test-Path -LiteralPath $lock) -or -not(Test-Path -LiteralPath $entry)){
+            throw 'Provisioned Restricted Remote runtime is incomplete.'
+        }
+        $raw=[IO.File]::ReadAllText($lock)
+        if(-not $raw.Contains(('"version": "{0}"' -f $packageVersion)) -or
+           -not $raw.Contains(('"integrity": "{0}"' -f $packageIntegrity))){
+            throw 'Provisioned Restricted Remote runtime failed the pinned package check.'
+        }
+
+        if(Test-Path -LiteralPath $target){
+            Remove-Item -LiteralPath $target -Recurse -Force
+        }
+        Move-Item -LiteralPath $stage -Destination $target
+        Invoke-IcaclsChecked @($target,'/inheritance:e')
+        return [pscustomobject]@{
+            Root=$target
+            EntryPoint=(Join-Path $target 'node_modules\@wonderwhy-er\desktop-commander\dist\index.js')
+        }
+    }finally{
+        if(Test-Path -LiteralPath $stage){
+            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Protect-OwnerOnlyDirectory {
     param([Parameter(Mandatory)][string]$Path)
     $currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -201,6 +248,8 @@ $usersGroup=Get-LocalGroup -SID 'S-1-5-32-545'
 try{Remove-LocalGroupMember -Group $adminGroup.Name -Member $AccountName -ErrorAction SilentlyContinue}catch{}
 try{Add-LocalGroupMember -Group $usersGroup.Name -Member $AccountName -ErrorAction SilentlyContinue}catch{}
 
+$installedRuntime=Install-ReviewedRuntime -Source $runtime -RestrictedSid $restrictedSid
+
 $hideKey='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
 New-Item -Path $hideKey -Force|Out-Null
 New-ItemProperty -Path $hideKey -Name $AccountName -Value 0 -PropertyType DWord -Force|Out-Null
@@ -259,7 +308,6 @@ $restrictedProjectsFile=Join-Path $restrictedStateRoot 'restricted-projects.json
 # normal interactive-user chat.
 Invoke-IcaclsChecked @($restrictedStateRoot,'/grant',('*'+$restrictedSid+':(OI)(CI)M'))
 Invoke-IcaclsChecked @($restrictedWorkspaceRoot,'/grant',('*'+$restrictedSid+':(OI)(CI)M'))
-Invoke-IcaclsChecked @($runtime.Root,'/grant',('*'+$restrictedSid+':(OI)(CI)RX'))
 
 $dcState=Join-Path $profilePath '.desktop-commander-device'
 $dcConfigRoot=Join-Path $profilePath '.claude-server-commander'
@@ -304,8 +352,8 @@ $config=[ordered]@{
     userSid=$restrictedSid
     profilePath=$profilePath
     nodePath=$nodePath
-    runtimeRoot=$runtime.Root
-    entryPoint=$runtime.EntryPoint
+    runtimeRoot=$installedRuntime.Root
+    entryPoint=$installedRuntime.EntryPoint
     packageVersion=$packageVersion
     packageIntegrity=$packageIntegrity
     passwordFile=$passwordFile
@@ -321,5 +369,5 @@ Protect-OwnerOnlyDirectory -Path $securityRoot
 Write-Host 'Restricted Remote system identity is prepared.' -ForegroundColor Green
 Write-Host ('Account: '+$AccountName)
 Write-Host ('Profile: '+$profilePath)
-Write-Host ('Runtime: '+$runtime.Root)
+Write-Host ('Runtime: '+$installedRuntime.Root)
 Write-Host 'Mode is not active yet. Run Activate-RestrictedRemote.ps1 locally when ready.'
