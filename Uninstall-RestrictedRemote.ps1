@@ -109,6 +109,15 @@ try{
     Write-Warning ('Could not remove the Restricted Remote Windows profile: '+$_.Exception.Message)
 }
 
+$identityMarkerPath=[string]$config.identityMarkerPath
+if(-not $identityMarkerPath -and $userSid){
+    $commonData=[Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    $identityMarkerPath=Join-Path (Join-Path $commonData 'ChatGPT-MultiChat\restricted-identities') ($userSid+'.json')
+}
+if($identityMarkerPath){
+    Remove-Item -LiteralPath $identityMarkerPath -Force -ErrorAction SilentlyContinue
+}
+
 foreach($file in @(
     (Get-RestrictedRemoteConfigPath),
     (Get-RestrictedRemoteStatusPath),
