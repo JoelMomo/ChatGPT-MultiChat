@@ -65,6 +65,15 @@ if(Test-Path -LiteralPath $launcherPath){
     if($launcher -notmatch '-UseNewEnvironment'){
         Add-RestrictedFailure 'Restricted launcher can inherit the interactive user environment.'
     }
+    if(-not $launcher.Contains("GetEnvironmentVariable('SystemRoot','Machine')")){
+        Add-RestrictedFailure 'Restricted launcher does not restore SystemRoot in its clean child environment.'
+    }
+    if(-not $launcher.Contains('restricted-remote-child.cmd')){
+        Add-RestrictedFailure 'Restricted launcher does not use the native bootstrap required by Windows PowerShell clean-environment isolation.'
+    }
+    if($launcher.Contains('Start-Process powershell.exe') -and $launcher.Contains('-UseNewEnvironment')){
+        Add-RestrictedFailure 'Restricted launcher still starts Windows PowerShell directly with UseNewEnvironment.'
+    }
 }
 if(Test-Path -LiteralPath $childPath){
     $child=[IO.File]::ReadAllText($childPath)
