@@ -98,6 +98,15 @@ if(Test-Path -LiteralPath $launcherPath){
     if(-not $launcher.Contains('IndexOf(''\'')')){
         Add-RestrictedFailure 'Restricted launcher does not split DOMAIN\user on a single backslash.'
     }
+    if(-not $launcher.Contains('restricted-remote-child.stderr.tmp')){
+        Add-RestrictedFailure 'Restricted launcher does not capture child startup stderr for diagnosis.'
+    }
+    if(-not $launcher.Contains('Diagnostic:')){
+        Add-RestrictedFailure 'Restricted launcher does not surface bounded child startup diagnostics.'
+    }
+    if(-not $launcher.Contains('<redacted>')){
+        Add-RestrictedFailure 'Restricted launcher diagnostics do not redact credential-like values.'
+    }
 }
 if(Test-Path -LiteralPath $childPath){
     $child=[IO.File]::ReadAllText($childPath)
