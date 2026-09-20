@@ -198,7 +198,13 @@ $ErrorActionPreference='SilentlyContinue'
 $readyPath=$env:MULTICHAT_READY_PATH
 $entryPoint=$env:MULTICHAT_ENTRY_POINT
 $self=Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $PID)
-$bootstrapPid=if($self){[int]$self.ParentProcessId}else{0}
+$bootstrapPid=if($env:MULTICHAT_WATCH_BOOTSTRAP_PID){
+    [int]$env:MULTICHAT_WATCH_BOOTSTRAP_PID
+}elseif($self){
+    [int]$self.ParentProcessId
+}else{
+    0
+}
 function Write-Ready([int]$RemotePid){
     $payload=[ordered]@{
         schemaVersion=1
