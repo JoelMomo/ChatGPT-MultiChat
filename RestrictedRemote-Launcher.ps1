@@ -69,11 +69,58 @@ public static class MultiChatRestrictedJob {
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
 
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public struct STARTUPINFO {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public uint dwX;
+        public uint dwY;
+        public uint dwXSize;
+        public uint dwYSize;
+        public uint dwXCountChars;
+        public uint dwYCountChars;
+        public uint dwFillAttribute;
+        public uint dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PROCESS_INFORMATION {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public uint dwProcessId;
+        public uint dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern bool CreateProcessWithLogonW(
+        string lpUsername,
+        string lpDomain,
+        string lpPassword,
+        uint dwLogonFlags,
+        string lpApplicationName,
+        System.Text.StringBuilder lpCommandLine,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
     [DllImport("kernel32.dll", SetLastError=true)]
-    public static extern IntPtr OpenProcess(
-        uint dwDesiredAccess,
-        bool bInheritHandle,
-        uint dwProcessId);
+    public static extern uint ResumeThread(IntPtr hThread);
+
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
 
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool TerminateJobObject(IntPtr hJob, uint exitCode);
@@ -106,8 +153,9 @@ public static class MultiChatRestrictedJob {
 }
 '@
 $job=[IntPtr]::Zero
-$child=$null
-$childJobHandle=[IntPtr]::Zero
+$childProcessHandle=[IntPtr]::Zero
+$childThreadHandle=[IntPtr]::Zero
+$childPid=0
 $failed=$false
 try{
     Write-RestrictedRemoteStatus -State 'STARTING' -LauncherPid $PID
@@ -173,67 +221,150 @@ try{
     )
     [IO.File]::WriteAllLines($bootstrap,$lines,(New-Object Text.UTF8Encoding($false)))
 
-    $child=Start-Process $cmdPath `
-        -ArgumentList @('/d','/c',('"'+$bootstrap+'"')) `
-        -Credential $credential `
-        -LoadUserProfile `
-        -UseNewEnvironment `
-        -WindowStyle Hidden `
-        -PassThru
-
-    # Start-Process -Credential can return a Process object whose managed
-    # Handle property is null even though the process is alive. Re-open the
-    # native process explicitly with only the rights required by job assignment.
-    # The one-second bootstrap delay prevents Node from starting before this.
-    $PROCESS_TERMINATE=0x0001
-    $PROCESS_SET_QUOTA=0x0100
-    $PROCESS_QUERY_LIMITED_INFORMATION=0x1000
-    $desiredAccess=$PROCESS_TERMINATE -bor $PROCESS_SET_QUOTA -bor $PROCESS_QUERY_LIMITED_INFORMATION
-
-    $childJobHandle=[MultiChatRestrictedJob]::OpenProcess(
-        [uint32]$desiredAccess,
-        $false,
-        [uint32]$child.Id
-    )
-    if($childJobHandle -eq [IntPtr]::Zero){
-        $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        $exitCode=try{$child.ExitCode}catch{-1}
-        throw "Could not open Restricted Remote bootstrap for containment (Win32 $win32Error, exit $exitCode)."
+    # Create the restricted bootstrap suspended under the target identity.
+    # The returned native process handle belongs to this launcher even though
+    # the child runs as another user, so containment can be applied before any
+    # Node code executes. This avoids cross-user OpenProcess access (Win32 5).
+    $credentialName=[string]$credential.UserName
+    $slash=$credentialName.IndexOf('\\')
+    if($slash -gt 0){
+        $logonDomain=$credentialName.Substring(0,$slash)
+        $logonUser=$credentialName.Substring($slash+1)
+    }else{
+        $logonDomain='.'
+        $logonUser=$credentialName
     }
-    if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$childJobHandle)){
+
+    $cleanEnvironment=@{
+        'SystemRoot'=$systemRoot
+        'windir'=$systemRoot
+        'SystemDrive'=$systemDrive
+        'ComSpec'=$cmdPath
+        'USERPROFILE'=$profile
+        'HOME'=$profile
+        'HOMEDRIVE'=$homeDrive
+        'HOMEPATH'=$homePath
+        'APPDATA'=$appData
+        'LOCALAPPDATA'=$localAppData
+        'TEMP'=$temp
+        'TMP'=$temp
+        'PATH'=$machinePath
+        'PATHEXT'=$machinePathExt
+        'USERNAME'=$logonUser
+        'USERDOMAIN'=$logonDomain
+        'COMPUTERNAME'=[Environment]::MachineName
+        'DC_REMOTE_DEVICE'='true'
+        'MULTICHAT_RESTRICTED_REMOTE'='1'
+        'MULTICHAT_STATE_ROOT'=[string]$config.stateRoot
+        'MULTICHAT_WORKSPACE_ROOT'=[string]$config.workspaceRoot
+        'GIT_CONFIG_NOSYSTEM'='1'
+        'GIT_TERMINAL_PROMPT'='0'
+    }
+    $environmentText=(
+        @($cleanEnvironment.GetEnumerator()|Sort-Object Key|ForEach-Object{
+            [string]$_.Key+'='+[string]$_.Value
+        }) -join [char]0
+    )+[char]0+[char]0
+    $environmentBytes=[Text.Encoding]::Unicode.GetBytes($environmentText)
+    $environmentPtr=[Runtime.InteropServices.Marshal]::AllocHGlobal($environmentBytes.Length)
+
+    $passwordBstr=[IntPtr]::Zero
+    try{
+        [Runtime.InteropServices.Marshal]::Copy(
+            $environmentBytes,0,$environmentPtr,$environmentBytes.Length
+        )
+        $passwordBstr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($credential.Password)
+        $plainPassword=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordBstr)
+
+        $startup=New-Object MultiChatRestrictedJob+STARTUPINFO
+        $startup.cb=[Runtime.InteropServices.Marshal]::SizeOf([type][MultiChatRestrictedJob+STARTUPINFO])
+        $startup.dwFlags=0x00000001 # STARTF_USESHOWWINDOW
+        $startup.wShowWindow=0      # SW_HIDE
+        $processInfo=New-Object MultiChatRestrictedJob+PROCESS_INFORMATION
+
+        $CREATE_SUSPENDED=0x00000004
+        $CREATE_UNICODE_ENVIRONMENT=0x00000400
+        $CREATE_NO_WINDOW=0x08000000
+        $LOGON_WITH_PROFILE=0x00000001
+        $creationFlags=$CREATE_SUSPENDED -bor $CREATE_UNICODE_ENVIRONMENT -bor $CREATE_NO_WINDOW
+        $commandLine=New-Object Text.StringBuilder
+        [void]$commandLine.Append('"'+$cmdPath+'" /d /c ""'+$bootstrap+'""')
+
+        $created=[MultiChatRestrictedJob]::CreateProcessWithLogonW(
+            $logonUser,
+            $logonDomain,
+            $plainPassword,
+            [uint32]$LOGON_WITH_PROFILE,
+            $cmdPath,
+            $commandLine,
+            [uint32]$creationFlags,
+            $environmentPtr,
+            [string]$config.stateRoot,
+            [ref]$startup,
+            [ref]$processInfo
+        )
+        if(-not $created){
+            $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "Could not create Restricted Remote bootstrap (Win32 $win32Error)."
+        }
+        $childProcessHandle=$processInfo.hProcess
+        $childThreadHandle=$processInfo.hThread
+        $childPid=[int]$processInfo.dwProcessId
+    }finally{
+        $plainPassword=$null
+        if($passwordBstr -ne [IntPtr]::Zero){
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr)
+        }
+        if($environmentPtr -ne [IntPtr]::Zero){
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($environmentPtr)
+        }
+    }
+
+    if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$childProcessHandle)){
         $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
         throw "Could not place Restricted Remote in its containment job (Win32 $win32Error)."
     }
+    $resumeResult=[MultiChatRestrictedJob]::ResumeThread($childThreadHandle)
+    if($resumeResult -eq 0xFFFFFFFF){
+        $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "Could not resume Restricted Remote bootstrap (Win32 $win32Error)."
+    }
 
-    Write-RestrictedRemoteStatus -State 'RUNNING' -LauncherPid $PID -ChildPid $child.Id
+    Write-RestrictedRemoteStatus -State 'RUNNING' -LauncherPid $PID -ChildPid $childPid
     while($true){
         Start-Sleep -Milliseconds 500
         if(Test-Path -LiteralPath $killSwitch){break}
         if(-not(Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)){break}
-        $child.Refresh()
-        if($child.HasExited){
-            $exitCode=try{$child.ExitCode}catch{-1}
+        $wait=[MultiChatRestrictedJob]::WaitForSingleObject($childProcessHandle,0)
+        if($wait -eq 0){
+            [uint32]$exitCode=0
+            [void][MultiChatRestrictedJob]::GetExitCodeProcess($childProcessHandle,[ref]$exitCode)
             throw "Restricted Remote child exited unexpectedly (exit $exitCode)."
+        }
+        if($wait -ne 258){
+            $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "Could not query Restricted Remote child state (Win32 $win32Error)."
         }
     }
 }catch{
     $failed=$true
     try{
-        Write-RestrictedRemoteStatus -State 'FAILED' -LauncherPid $PID -ChildPid $(if($child){$child.Id}else{0}) -Message $_.Exception.Message
+        Write-RestrictedRemoteStatus -State 'FAILED' -LauncherPid $PID -ChildPid $childPid -Message $_.Exception.Message
     }catch{}
     throw
 }finally{
     if($job -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::TerminateJobObject($job,0)
     }
-    if($childJobHandle -ne [IntPtr]::Zero){
-        [void][MultiChatRestrictedJob]::CloseHandle($childJobHandle)
+    if($childThreadHandle -ne [IntPtr]::Zero){
+        [void][MultiChatRestrictedJob]::CloseHandle($childThreadHandle)
+    }
+    if($childProcessHandle -ne [IntPtr]::Zero){
+        [void][MultiChatRestrictedJob]::CloseHandle($childProcessHandle)
     }
     if($job -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::CloseHandle($job)
     }
-    if($child){$child.Dispose()}
     if(-not $failed){
         try{Write-RestrictedRemoteStatus -State 'STOPPED' -LauncherPid $PID}catch{}
     }
