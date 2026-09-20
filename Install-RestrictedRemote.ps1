@@ -118,6 +118,41 @@ function Install-ReviewedRuntime {
     }
 }
 
+function Write-RestrictedIdentityMarker {
+    param(
+        [Parameter(Mandatory)][string]$RestrictedSid,
+        [Parameter(Mandatory)][string]$AccountName,
+        [Parameter(Mandatory)][string]$ProfilePath,
+        [Parameter(Mandatory)][string]$StateRoot,
+        [Parameter(Mandatory)][string]$WorkspaceRoot
+    )
+
+    $ownerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $commonData=[Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    $markerRoot=Join-Path $commonData 'ChatGPT-MultiChat\restricted-identities'
+    $markerPath=Join-Path $markerRoot ($RestrictedSid+'.json')
+    New-Item -ItemType Directory -Path $markerRoot -Force|Out-Null
+    Invoke-IcaclsChecked @($markerRoot,'/inheritance:r')
+    Invoke-IcaclsChecked @($markerRoot,'/grant:r','*S-1-5-18:(OI)(CI)F')
+    Invoke-IcaclsChecked @($markerRoot,'/grant','*S-1-5-32-544:(OI)(CI)F')
+    Invoke-IcaclsChecked @($markerRoot,'/grant',('*'+$ownerSid+':(OI)(CI)R'))
+    Invoke-IcaclsChecked @($markerRoot,'/grant',('*'+$RestrictedSid+':(OI)(CI)R'))
+
+    $payload=[ordered]@{
+        schemaVersion=1
+        userSid=$RestrictedSid
+        accountName=$AccountName
+        installRoot=$root
+        profilePath=$ProfilePath
+        stateRoot=$StateRoot
+        workspaceRoot=$WorkspaceRoot
+        configuredAt=(Get-Date).ToString('o')
+    }
+    [IO.File]::WriteAllText($markerPath,($payload|ConvertTo-Json -Depth 5),(New-Object Text.UTF8Encoding($false)))
+    Invoke-IcaclsChecked @($markerPath,'/inheritance:e')
+    return $markerPath
+}
+
 function Protect-OwnerOnlyDirectory {
     param([Parameter(Mandatory)][string]$Path)
     $currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -308,6 +343,7 @@ $restrictedProjectsFile=Join-Path $restrictedStateRoot 'restricted-projects.json
 # normal interactive-user chat.
 Invoke-IcaclsChecked @($restrictedStateRoot,'/grant',('*'+$restrictedSid+':(OI)(CI)M'))
 Invoke-IcaclsChecked @($restrictedWorkspaceRoot,'/grant',('*'+$restrictedSid+':(OI)(CI)M'))
+$identityMarkerPath=Write-RestrictedIdentityMarker -RestrictedSid $restrictedSid -AccountName $AccountName -ProfilePath $profilePath -StateRoot $restrictedStateRoot -WorkspaceRoot $restrictedWorkspaceRoot
 
 $dcState=Join-Path $profilePath '.desktop-commander-device'
 $dcConfigRoot=Join-Path $profilePath '.claude-server-commander'
@@ -358,6 +394,7 @@ $config=[ordered]@{
     packageIntegrity=$packageIntegrity
     passwordFile=$passwordFile
     workspaceIsolation='shared-clone'
+    identityMarkerPath=$identityMarkerPath
     projectRoots=@($projects)
     stateRoot=$restrictedStateRoot
     workspaceRoot=$restrictedWorkspaceRoot
