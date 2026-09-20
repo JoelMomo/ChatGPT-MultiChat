@@ -80,6 +80,12 @@ if(Test-Path -LiteralPath $launcherPath){
     if($launcher -notmatch 'Restricted Remote child exited unexpectedly'){
         Add-RestrictedFailure 'Restricted launcher does not surface an unexpected child exit.'
     }
+    if($launcher -notmatch 'OpenProcess\(' -or $launcher -notmatch 'PROCESS_SET_QUOTA'){
+        Add-RestrictedFailure 'Restricted launcher does not reopen the credentialed child with job-assignment rights.'
+    }
+    if($launcher -match '\$child\.Handle'){
+        Add-RestrictedFailure 'Restricted launcher still depends on the nullable managed Handle returned by Start-Process -Credential.'
+    }
 }
 if(Test-Path -LiteralPath $childPath){
     $child=[IO.File]::ReadAllText($childPath)
