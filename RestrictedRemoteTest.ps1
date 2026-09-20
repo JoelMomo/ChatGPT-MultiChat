@@ -43,10 +43,10 @@ if(Test-Path -LiteralPath $installerPath){
     if($installer -notmatch 'shared clones'){
         Add-RestrictedFailure 'Installer does not declare shared-clone Git isolation.'
     }
-    if(-not $installer.Contains("Join-Path $env:ProgramData 'ChatGPT-MultiChat\restricted-runtime'")){
+    if(-not $installer.Contains('Join-Path $env:ProgramData ''ChatGPT-MultiChat\restricted-runtime''')){
         Add-RestrictedFailure 'Installer leaves the restricted runtime under the interactive user profile.'
     }
-    if($installer -match "Invoke-IcaclsChecked @\(\$runtime\.Root,'/grant'"){
+    if($installer -match 'Invoke-IcaclsChecked @\(\$runtime\.Root,''/grant'''){
         Add-RestrictedFailure 'Installer grants the restricted account direct access to the interactive user npm cache.'
     }
     $descriptionMatch=[regex]::Match($installer,"\$accountDescription='([^']*)'")
@@ -56,7 +56,7 @@ if(Test-Path -LiteralPath $installerPath){
 }
 if(Test-Path -LiteralPath $repairPath){
     $repair=[IO.File]::ReadAllText($repairPath)
-    if(-not $repair.Contains("Join-Path $env:ProgramData 'ChatGPT-MultiChat\restricted-runtime'")){
+    if(-not $repair.Contains('Join-Path $env:ProgramData ''ChatGPT-MultiChat\restricted-runtime''')){
         Add-RestrictedFailure 'Runtime repair does not migrate the reviewed runtime out of the interactive user profile.'
     }
     if(-not $repair.Contains('Get-RestrictedRemoteInstalledConfig')){
