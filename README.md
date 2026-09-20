@@ -542,7 +542,7 @@ The self-test checks dependencies, PowerShell syntax, configuration, slot behavi
 
 The project uses paths relative to its own folder.
 
-`Make-Portable-Package.ps1` creates a ZIP without copying machine-local runtime state, logs, sessions, leases, or worktrees. The package recreates empty runtime directories, including `state\leases`, on the target machine.
+`Make-Portable-Package.ps1` builds the ZIP from **Git-tracked application files only**. Developer-local helpers, patches, credentials, logs, sessions, leases, worktrees, and other untracked files beside the checkout are not copied into a release. The package recreates empty runtime directories, including `state\leases`, on the target machine.
 
 To build a package:
 

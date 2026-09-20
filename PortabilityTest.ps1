@@ -8,8 +8,24 @@ function Add-PortabilityFailure {
 }
 
 $extensions=@('.ps1','.psm1','.cmd')
-foreach($item in @(Get-ChildItem -LiteralPath $root -File -Force)){
-    if($item.Extension.ToLowerInvariant() -notin $extensions){continue}
+$files=@()
+$tracked=@(& git -C $root ls-files 2>$null)
+if($LASTEXITCODE -eq 0 -and $tracked.Count){
+    foreach($relative in $tracked){
+        $path=Join-Path $root ([string]$relative).Replace('/','\')
+        if(-not(Test-Path -LiteralPath $path -PathType Leaf)){continue}
+        $item=Get-Item -LiteralPath $path
+        if($item.Extension.ToLowerInvariant() -in $extensions){$files+=$item}
+    }
+}else{
+    # Portable ZIPs intentionally have no .git metadata. In that case every
+    # shipped top-level executable script is part of the package surface.
+    $files=@(Get-ChildItem -LiteralPath $root -File -Force|Where-Object{
+        $_.Extension.ToLowerInvariant() -in $extensions
+    })
+}
+
+foreach($item in $files){
     $text=[IO.File]::ReadAllText($item.FullName)
 
     if($text -match '(?i)[A-Z]:[\\/]+Users[\\/]+[^\\/''"\s]+'){
@@ -17,6 +33,14 @@ foreach($item in @(Get-ChildItem -LiteralPath $root -File -Force)){
     }
     if($env:COMPUTERNAME -and $text.Contains($env:COMPUTERNAME,[StringComparison]::OrdinalIgnoreCase)){
         Add-PortabilityFailure ("Current computer name is embedded in "+$item.Name)
+    }
+}
+
+$packageScript=Join-Path $root 'Make-Portable-Package.ps1'
+if(Test-Path -LiteralPath $packageScript){
+    $packageText=[IO.File]::ReadAllText($packageScript)
+    if($packageText -notmatch 'git\s+-C\s+\$root\s+ls-files'){
+        Add-PortabilityFailure 'Portable packaging is not constrained to Git-tracked files.'
     }
 }
 

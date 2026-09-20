@@ -58,7 +58,8 @@ The audit also verified, without extracting secret values, that browser login/co
 - `SecurityTest.ps1` validates the security-critical configuration and local ACL state.
 - The managed-chat prompt explicitly treats repository files, web content, issues, logs, terminal output, and downloaded artifacts as untrusted data and forbids external content from authorizing security-sensitive actions.
 - Optional **Restricted Remote** containment runs Remote Desktop Commander under a dedicated local standard Windows identity with a separate DPAPI/profile boundary, read-only access to approved canonical Git metadata, isolated shared-clone workspaces, a kill-on-close job object, a clean child environment, and explicit review-branch import instead of direct canonical-repository writes.
-- Restricted Remote installation is path/SID driven rather than machine-name/user-profile hard-coded, and `PortabilityTest.ps1` rejects executable scripts containing machine-specific user-profile paths or the current computer name.
+- Restricted Remote installation is path/SID driven rather than machine-name/user-profile hard-coded, and `PortabilityTest.ps1` rejects tracked executable scripts containing machine-specific user-profile paths or the current computer name.
+- Portable release construction copies Git-tracked application files only, preventing unrelated local helper scripts, patches, credentials, or other untracked checkout files from leaking into a release ZIP.
 
 The three exposure controls above can be overridden by adding these optional settings to `config.json`:
 
