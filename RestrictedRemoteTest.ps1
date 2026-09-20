@@ -86,6 +86,9 @@ if(Test-Path -LiteralPath $launcherPath){
     if($launcher -match '\$child\.Handle'){
         Add-RestrictedFailure 'Restricted launcher still depends on the nullable managed Handle returned by Start-Process -Credential.'
     }
+    if($launcher -match '(?im)^\s*\$error\s*='){
+        Add-RestrictedFailure 'Restricted launcher overwrites the reserved PowerShell Error automatic variable.'
+    }
 }
 if(Test-Path -LiteralPath $childPath){
     $child=[IO.File]::ReadAllText($childPath)
