@@ -106,6 +106,16 @@ if(Test-Path -LiteralPath $activatorPath){
         Add-RestrictedFailure 'Activator can remove normal authorization before stopping the tray.'
     }
 }
+$restrictedModulePath=Join-Path $root 'RestrictedRemote.psm1'
+if(Test-Path -LiteralPath $restrictedModulePath){
+    $restrictedModule=[IO.File]::ReadAllText($restrictedModulePath)
+    if($restrictedModule -match 'Get-Process\s+-Id\s+\$remotePid'){
+        Add-RestrictedFailure 'Restricted readiness still depends on cross-user process inspection.'
+    }
+    if($restrictedModule -notmatch '\$age\s+-ge\s+0\s+-and\s+\$age\s+-le\s+\$MaxAgeSeconds'){
+        Add-RestrictedFailure 'Restricted readiness does not validate heartbeat freshness.'
+    }
+}
 if(Test-Path -LiteralPath $launcherPath){
     $launcher=[IO.File]::ReadAllText($launcherPath)
     if($launcher -notmatch '-UseNewEnvironment'){
