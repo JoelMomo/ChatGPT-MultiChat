@@ -160,6 +160,15 @@ if(Test-Path -LiteralPath $launcherPath){
     if(-not $launcher.Contains('RestrictedRemote-Child.ps1')){
         Add-RestrictedFailure 'Restricted launcher bypasses the restricted child supervisor.'
     }
+    if(-not $launcher.Contains('-EncodedCommand')){
+        Add-RestrictedFailure 'Restricted launcher does not embed the child supervisor for the restricted identity.'
+    }
+    if($launcher -match '-File\s+.*RestrictedRemote-Child\.ps1'){
+        Add-RestrictedFailure 'Restricted launcher requires the restricted account to read the owner checkout child script directly.'
+    }
+    if(-not $launcher.Contains('MULTICHAT_NODE_PATH') -or -not $launcher.Contains('MULTICHAT_ENTRY_POINT')){
+        Add-RestrictedFailure 'Embedded restricted supervisor is missing its pinned runtime paths.'
+    }
     if(-not $launcher.Contains('Diagnostic:')){
         Add-RestrictedFailure 'Restricted launcher does not surface bounded child startup diagnostics.'
     }
