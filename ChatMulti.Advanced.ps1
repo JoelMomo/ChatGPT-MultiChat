@@ -138,7 +138,7 @@ function Release-ChatPort {
 }
 
 function Get-RegisteredChatProjects {
-    $registryName=if([string]$env:MULTICHAT_RESTRICTED_REMOTE -eq '1'){'restricted-projects.json'}else{'projects.json'}
+    $registryName=if($script:RestrictedRemoteMode){'restricted-projects.json'}else{'projects.json'}
     $path = Join-Path $script:StateRoot $registryName
     if (-not (Test-Path -LiteralPath $path)) {
         return @()
@@ -186,7 +186,7 @@ function Register-ChatProject {
 
     $root = $root.Trim()
 
-    if([string]$env:MULTICHAT_RESTRICTED_REMOTE -eq '1'){
+    if($script:RestrictedRemoteMode){
         $approved=@(Get-RegisteredChatProjects|Where-Object{
             $candidate=[string](Get-ChatProp $_ 'path' '')
             $candidate -and [string]::Equals(
