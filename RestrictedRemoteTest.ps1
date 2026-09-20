@@ -194,11 +194,11 @@ if(Test-Path -LiteralPath $childPath){
     if(-not $child.Contains('ReadLineAsync')){
         Add-RestrictedFailure 'Restricted child does not drain Remote stdout/stderr without persisting tool content.'
     }
-    if(-not $child.Contains('Device ready:') -or -not $child.Contains('Presence tracked')){
-        Add-RestrictedFailure 'Restricted child heartbeat does not derive readiness from Remote connection output.'
+    if(-not $child.Contains('Get-NetTCPConnection')){
+        Add-RestrictedFailure 'Restricted child does not validate connectivity from inside the restricted identity.'
     }
-    if($child.Contains('Get-NetTCPConnection')){
-        Add-RestrictedFailure 'Restricted child readiness still depends on TCP ownership inspection.'
+    if(-not $child.Contains('OwningProcess -in $tree') -or -not $child.Contains('RemotePort -eq 443')){
+        Add-RestrictedFailure 'Restricted child heartbeat is not scoped to its own Remote process tree on TCP 443.'
     }
 }
 if(Test-Path -LiteralPath $trayPath){
