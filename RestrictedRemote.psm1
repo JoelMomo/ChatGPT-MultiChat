@@ -81,9 +81,17 @@ function Test-RestrictedRemoteReady {
         $ready=Get-Content -LiteralPath $path -Raw -ErrorAction Stop|ConvertFrom-Json
         if([string]$ready.state -ne 'CONNECTED'){return $false}
         $remotePid=[int]$ready.remotePid
-        if($remotePid -le 0 -or -not(Get-Process -Id $remotePid -ErrorAction SilentlyContinue)){return $false}
+        if($remotePid -le 0){return $false}
+
+        # Do not call Get-Process on the restricted user's PID here. The tray
+        # runs as the interactive user and Windows may deny cross-user process
+        # inspection even though the process is healthy. The enclosing caller
+        # already verifies that the owner-side launcher is alive; freshness of
+        # this marker proves that the restricted supervisor is still running
+        # and observing an established Remote TCP connection.
         $updated=[datetimeoffset]::Parse([string]$ready.updatedAt)
-        return ([datetimeoffset]::Now-$updated).TotalSeconds -le $MaxAgeSeconds
+        $age=([datetimeoffset]::Now-$updated).TotalSeconds
+        return $age -ge 0 -and $age -le $MaxAgeSeconds
     }catch{return $false}
 }
 
