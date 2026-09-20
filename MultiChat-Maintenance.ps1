@@ -28,28 +28,23 @@ try{
         $status=Get-RestrictedRemoteStatus
         $launcherPid=if($status){[int]$status.launcherPid}else{0}
         if($status -and [string]$status.state -eq 'RUNNING' -and $launcherPid -gt 0 -and (Get-Process -Id $launcherPid -ErrorAction SilentlyContinue)){
-            if(Get-Command Test-RestrictedRemoteReady -ErrorAction SilentlyContinue){
-                $dcOnline=[bool](Test-RestrictedRemoteReady)
-            }
-            if(-not $dcOnline){
-                $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Select-Object ProcessId,ParentProcessId)
-                $tree=New-Object Collections.Generic.List[int]
-                [void]$tree.Add($launcherPid)
-                for($pass=0;$pass -lt 8;$pass++){
-                    $added=$false
-                    foreach($proc in $all){
-                        if($tree.Contains([int]$proc.ParentProcessId) -and -not $tree.Contains([int]$proc.ProcessId)){
-                            [void]$tree.Add([int]$proc.ProcessId)
-                            $added=$true
-                        }
+            $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue|Select-Object ProcessId,ParentProcessId)
+            $tree=New-Object Collections.Generic.List[int]
+            [void]$tree.Add($launcherPid)
+            for($pass=0;$pass -lt 8;$pass++){
+                $added=$false
+                foreach($proc in $all){
+                    if($tree.Contains([int]$proc.ParentProcessId) -and -not $tree.Contains([int]$proc.ProcessId)){
+                        [void]$tree.Add([int]$proc.ProcessId)
+                        $added=$true
                     }
-                    if(-not $added){break}
                 }
-                $dcOnline=@(
-                    Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-                    Where-Object { $_.OwningProcess -in @($tree) -and $_.RemotePort -eq 443 }
-                ).Count -gt 0
+                if(-not $added){break}
             }
+            $dcOnline=@(
+                Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                Where-Object { $_.OwningProcess -in @($tree) -and $_.RemotePort -eq 443 }
+            ).Count -gt 0
         }
     }else{
         $remoteProcesses=@(
