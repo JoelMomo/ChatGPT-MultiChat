@@ -70,6 +70,12 @@ public static class MultiChatRestrictedJob {
     public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
 
     [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern IntPtr OpenProcess(
+        uint dwDesiredAccess,
+        bool bInheritHandle,
+        uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool TerminateJobObject(IntPtr hJob, uint exitCode);
 
     [DllImport("kernel32.dll")]
@@ -101,6 +107,7 @@ public static class MultiChatRestrictedJob {
 '@
 $job=[IntPtr]::Zero
 $child=$null
+$childJobHandle=[IntPtr]::Zero
 $failed=$false
 try{
     Write-RestrictedRemoteStatus -State 'STARTING' -LauncherPid $PID
@@ -174,16 +181,26 @@ try{
         -WindowStyle Hidden `
         -PassThru
 
-    try{
-        $handle=$child.Handle
-    }catch{
+    # Start-Process -Credential can return a Process object whose managed
+    # Handle property is null even though the process is alive. Re-open the
+    # native process explicitly with only the rights required by job assignment.
+    # The one-second bootstrap delay prevents Node from starting before this.
+    $PROCESS_TERMINATE=0x0001
+    $PROCESS_SET_QUOTA=0x0100
+    $PROCESS_QUERY_LIMITED_INFORMATION=0x1000
+    $desiredAccess=$PROCESS_TERMINATE -bor $PROCESS_SET_QUOTA -bor $PROCESS_QUERY_LIMITED_INFORMATION
+
+    $childJobHandle=[MultiChatRestrictedJob]::OpenProcess(
+        [uint32]$desiredAccess,
+        $false,
+        [uint32]$child.Id
+    )
+    if($childJobHandle -eq [IntPtr]::Zero){
+        $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         $exitCode=try{$child.ExitCode}catch{-1}
-        throw "Restricted Remote bootstrap exited before containment (exit $exitCode)."
+        throw "Could not open Restricted Remote bootstrap for containment (Win32 $error, exit $exitCode)."
     }
-    if($handle -eq [IntPtr]::Zero){
-        throw 'Restricted Remote bootstrap did not expose a process handle.'
-    }
-    if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$handle)){
+    if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$childJobHandle)){
         $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
         throw "Could not place Restricted Remote in its containment job (Win32 $error)."
@@ -209,6 +226,11 @@ try{
 }finally{
     if($job -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::TerminateJobObject($job,0)
+    }
+    if($childJobHandle -ne [IntPtr]::Zero){
+        [void][MultiChatRestrictedJob]::CloseHandle($childJobHandle)
+    }
+    if($job -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::CloseHandle($job)
     }
     if($child){$child.Dispose()}
