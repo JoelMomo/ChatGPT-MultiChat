@@ -1,8 +1,38 @@
 Set-StrictMode -Version Latest
 
 $script:ManagerRoot = $PSScriptRoot
+$script:RestrictedRemoteContext = $null
+$script:RestrictedRemoteMode = ([string]$env:MULTICHAT_RESTRICTED_REMOTE -eq '1')
+
+# Desktop Commander's remote bridge intentionally forwards only a conservative
+# allowlist of environment variables to its local stdio MCP child. Therefore
+# MULTICHAT_* variables set by the outer restricted launcher are not guaranteed
+# to reach tool shells. Recover the restricted context from an administrator-
+# provisioned, SID-bound marker in ProgramData instead of weakening that bridge.
+if(-not $script:RestrictedRemoteMode){
+    try{
+        $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+        $sid=[string]$identity.User.Value
+        $commonData=[Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+        $marker=Join-Path (Join-Path $commonData 'ChatGPT-MultiChat\restricted-identities') ($sid+'.json')
+        if(Test-Path -LiteralPath $marker){
+            $candidate=Get-Content -LiteralPath $marker -Raw -ErrorAction Stop|ConvertFrom-Json
+            $candidateRoot=[IO.Path]::GetFullPath([string]$candidate.installRoot).TrimEnd('\')
+            $managerRoot=[IO.Path]::GetFullPath($script:ManagerRoot).TrimEnd('\')
+            if([string]::Equals($candidateRoot,$managerRoot,[StringComparison]::OrdinalIgnoreCase)){
+                $script:RestrictedRemoteContext=$candidate
+                $script:RestrictedRemoteMode=$true
+            }
+        }
+    }catch{}
+}
+
+$restrictedStateRoot=if($script:RestrictedRemoteContext){[string]$script:RestrictedRemoteContext.stateRoot}else{''}
+$restrictedWorkspaceRoot=if($script:RestrictedRemoteContext){[string]$script:RestrictedRemoteContext.workspaceRoot}else{''}
 $script:StateRoot = if($env:MULTICHAT_STATE_ROOT){
     [IO.Path]::GetFullPath([string]$env:MULTICHAT_STATE_ROOT)
+}elseif($script:RestrictedRemoteMode -and $restrictedStateRoot){
+    [IO.Path]::GetFullPath($restrictedStateRoot)
 }else{
     Join-Path $script:ManagerRoot 'state'
 }
@@ -11,8 +41,16 @@ $script:LockRoot = Join-Path $script:StateRoot 'locks'
 $script:SlotRoot = Join-Path $script:StateRoot 'slots'
 $script:WorkspaceRoot = if($env:MULTICHAT_WORKSPACE_ROOT){
     [IO.Path]::GetFullPath([string]$env:MULTICHAT_WORKSPACE_ROOT)
+}elseif($script:RestrictedRemoteMode -and $restrictedWorkspaceRoot){
+    [IO.Path]::GetFullPath($restrictedWorkspaceRoot)
 }else{
     Join-Path $script:ManagerRoot 'workspaces'
+}
+
+if($script:RestrictedRemoteMode){
+    $env:MULTICHAT_RESTRICTED_REMOTE='1'
+    $env:MULTICHAT_STATE_ROOT=$script:StateRoot
+    $env:MULTICHAT_WORKSPACE_ROOT=$script:WorkspaceRoot
 }
 $script:AutoResourceLocks = @()
 
@@ -465,7 +503,7 @@ function New-ManagedChatSession {
     $createdWorktree=$false
     $createdClone=$false
     $workspaceKind='direct'
-    $restrictedIsolation=([string]$env:MULTICHAT_RESTRICTED_REMOTE -eq '1')
+    $restrictedIsolation=$script:RestrictedRemoteMode
 
     try {
         if (-not $ProjectPath) {
