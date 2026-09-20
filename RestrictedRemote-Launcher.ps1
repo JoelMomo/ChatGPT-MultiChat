@@ -191,6 +191,17 @@ try{
     $childStderr=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stderr.tmp'
     Remove-Item -LiteralPath $childStdout,$childStderr -Force -ErrorAction SilentlyContinue
 
+    if(-not(Test-Path -LiteralPath $childScript)){
+        throw 'Restricted Remote child supervisor is missing.'
+    }
+    $childScriptText=[IO.File]::ReadAllText($childScript)
+    $childScriptPayload=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($childScriptText))
+    $runner=@"
+`$scriptText=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$childScriptPayload'))
+& ([ScriptBlock]::Create(`$scriptText)) -ProfilePath `$env:USERPROFILE -NodePath `$env:MULTICHAT_NODE_PATH -EntryPoint `$env:MULTICHAT_ENTRY_POINT -ManagerRoot `$env:MULTICHAT_MANAGER_ROOT
+exit `$LASTEXITCODE
+"@
+    $runnerEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($runner))
     $lines=@(
         '@echo off',
         'setlocal',
@@ -216,7 +227,10 @@ try{
         'set "GIT_TERMINAL_PROMPT=0"',
         'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
         '"%SystemRoot%\\System32\\ping.exe" -n 2 127.0.0.1 >nul',
-        ('"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "'+$(Escape-BatchValue $childScript)+'" -ProfilePath "'+$(Escape-BatchValue $profile)+'" -NodePath "'+$(Escape-BatchValue ([string]$config.nodePath))+'" -EntryPoint "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" -ManagerRoot "'+$(Escape-BatchValue $root)+'" 1>"'+$(Escape-BatchValue $childStdout)+'" 2>"'+$(Escape-BatchValue $childStderr)+'"'),
+        ('set "MULTICHAT_NODE_PATH='+$(Escape-BatchValue ([string]$config.nodePath))+'"'),
+        ('set "MULTICHAT_ENTRY_POINT='+$(Escape-BatchValue ([string]$config.entryPoint))+'"'),
+        ('set "MULTICHAT_MANAGER_ROOT='+$(Escape-BatchValue $root)+'"'),
+        ('"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand '+$runnerEncoded+' 1>"'+$(Escape-BatchValue $childStdout)+'" 2>"'+$(Escape-BatchValue $childStderr)+'"'),
         'set "rc=%errorlevel%"',
         'del /q "%USERPROFILE%\\.claude-server-commander\\claude_tool_call*.log" >nul 2>&1',
         'del /q "%USERPROFILE%\\.claude-server-commander\\tool-history*.jsonl" >nul 2>&1',
