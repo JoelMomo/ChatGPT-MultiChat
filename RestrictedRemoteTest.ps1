@@ -74,6 +74,12 @@ if(Test-Path -LiteralPath $launcherPath){
     if($launcher.Contains('Start-Process powershell.exe') -and $launcher.Contains('-UseNewEnvironment')){
         Add-RestrictedFailure 'Restricted launcher still starts Windows PowerShell directly with UseNewEnvironment.'
     }
+    if($launcher -notmatch '\$failed=\$false' -or $launcher -notmatch 'if\(-not \$failed\)'){
+        Add-RestrictedFailure 'Restricted launcher can overwrite FAILED state with STOPPED.'
+    }
+    if($launcher -notmatch 'Restricted Remote child exited unexpectedly'){
+        Add-RestrictedFailure 'Restricted launcher does not surface an unexpected child exit.'
+    }
 }
 if(Test-Path -LiteralPath $childPath){
     $child=[IO.File]::ReadAllText($childPath)
