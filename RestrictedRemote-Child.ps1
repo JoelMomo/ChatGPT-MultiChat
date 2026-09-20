@@ -73,7 +73,6 @@ function Get-ChildProcessTreeIds {
 $node=$null
 $stdoutTask=$null
 $stderrTask=$null
-$connected=$false
 try{
     $psi=New-Object Diagnostics.ProcessStartInfo
     $psi.FileName=$NodePath
@@ -100,17 +99,7 @@ try{
         # Drain stdout/stderr continuously in memory so Desktop Commander cannot
         # block on a full pipe. Never persist or echo remote tool arguments/results.
         while($stdoutTask -and $stdoutTask.IsCompleted){
-            $line=$stdoutTask.Result
-            if($null -eq $line){
-                $stdoutTask=$null
-                break
-            }
-            if($line -match '(?i)Device ready:|Presence tracked|visible as online'){
-                $connected=$true
-            }elseif($line -match '(?i)device.*offline|connection.*closed|disconnected'){
-                $connected=$false
-                Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
-            }
+            $null=$stdoutTask.Result
             $stdoutTask=$node.StandardOutput.ReadLineAsync()
         }
         while($stderrTask -and $stderrTask.IsCompleted){
@@ -118,8 +107,20 @@ try{
             $stderrTask=$node.StandardError.ReadLineAsync()
         }
 
+        # This supervisor runs under the same restricted Windows identity as
+        # Desktop Commander, so TCP ownership is reliable here. Keep the owner
+        # tray isolated from cross-user process/network inspection and publish
+        # only a small freshness heartbeat.
+        $tree=@(Get-ChildProcessTreeIds -RootPid $node.Id)
+        $connected=@(
+            Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+            Where-Object { $_.OwningProcess -in $tree -and $_.RemotePort -eq 443 }
+        ).Count -gt 0
+
         if($connected){
             Write-ReadyMarker -RemotePid $node.Id
+        }else{
+            Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
         }
 
         if($node.HasExited){break}
