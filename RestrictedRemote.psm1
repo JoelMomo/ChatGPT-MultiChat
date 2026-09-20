@@ -63,6 +63,30 @@ function Get-RestrictedRemoteCredential {
     return New-Object Management.Automation.PSCredential($userName,$secure)
 }
 
+function Get-RestrictedRemoteReadyPath {
+    param($Config=(Get-RestrictedRemoteConfig))
+    if(-not $Config -or -not [string]$Config.stateRoot){return $null}
+    Join-Path ([string]$Config.stateRoot) 'restricted-remote-ready.json'
+}
+
+function Test-RestrictedRemoteReady {
+    param(
+        $Config=(Get-RestrictedRemoteConfig),
+        [int]$MaxAgeSeconds=8
+    )
+    if(-not $Config){return $false}
+    $path=Get-RestrictedRemoteReadyPath -Config $Config
+    if(-not $path -or -not(Test-Path -LiteralPath $path)){return $false}
+    try{
+        $ready=Get-Content -LiteralPath $path -Raw -ErrorAction Stop|ConvertFrom-Json
+        if([string]$ready.state -ne 'CONNECTED'){return $false}
+        if([int]$ready.remotePid -le 0){return $false}
+        $updated=[datetimeoffset]::Parse([string]$ready.updatedAt)
+        $age=([datetimeoffset]::Now-$updated).TotalSeconds
+        return $age -ge 0 -and $age -le $MaxAgeSeconds
+    }catch{return $false}
+}
+
 function Get-RestrictedRemoteStatus {
     $path=Get-RestrictedRemoteStatusPath
     if(-not(Test-Path -LiteralPath $path)){return $null}
@@ -100,6 +124,7 @@ Export-ModuleMember -Function @(
     'Get-RestrictedRemoteSecurityRoot',
     'Get-RestrictedRemoteConfigPath',
     'Get-RestrictedRemoteStatusPath',
+    'Get-RestrictedRemoteReadyPath',
     'Get-RestrictedRemoteInstalledConfig',
     'Test-RestrictedRemoteInstallMatches',
     'Get-RestrictedRemoteConfig',
@@ -107,5 +132,6 @@ Export-ModuleMember -Function @(
     'Test-RestrictedRemoteMisconfigured',
     'Get-RestrictedRemoteCredential',
     'Get-RestrictedRemoteStatus',
+    'Test-RestrictedRemoteReady',
     'Write-RestrictedRemoteStatus'
 )
