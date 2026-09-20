@@ -189,7 +189,61 @@ try{
     $bootstrap=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.cmd'
     $childStdout=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stdout.tmp'
     $childStderr=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stderr.tmp'
-    Remove-Item -LiteralPath $childStdout,$childStderr -Force -ErrorAction SilentlyContinue
+    $readyPath=Join-Path ([string]$config.stateRoot) 'restricted-remote-ready.json'
+    Remove-Item -LiteralPath $childStdout,$childStderr,$readyPath -Force -ErrorAction SilentlyContinue
+    # Keep the known-good Remote process launch unchanged. A tiny sidecar runs
+    # under the same restricted identity and publishes only a freshness marker.
+    $watcher=@'
+$ErrorActionPreference='SilentlyContinue'
+$readyPath=$env:MULTICHAT_READY_PATH
+$entryPoint=$env:MULTICHAT_ENTRY_POINT
+$self=Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $PID)
+$bootstrapPid=if($self){[int]$self.ParentProcessId}else{0}
+function Write-Ready([int]$RemotePid){
+    $payload=[ordered]@{
+        schemaVersion=1
+        state='CONNECTED'
+        remotePid=$RemotePid
+        updatedAt=(Get-Date).ToString('o')
+    }
+    $tmp=$readyPath+'.tmp'
+    [IO.File]::WriteAllText($tmp,($payload|ConvertTo-Json -Depth 4),(New-Object Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $readyPath -Force
+}
+while($bootstrapPid -gt 0 -and (Get-Process -Id $bootstrapPid -ErrorAction SilentlyContinue)){
+    $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $ids=New-Object Collections.Generic.List[int]
+    [void]$ids.Add($bootstrapPid)
+    for($pass=0;$pass -lt 8;$pass++){
+        $added=$false
+        foreach($proc in $all){
+            if($ids.Contains([int]$proc.ParentProcessId) -and -not $ids.Contains([int]$proc.ProcessId)){
+                [void]$ids.Add([int]$proc.ProcessId)
+                $added=$true
+            }
+        }
+        if(-not $added){break}
+    }
+    $remote=@($all|Where-Object{
+        $_.ProcessId -in @($ids) -and
+        $_.Name -ieq 'node.exe' -and
+        [string]$_.CommandLine -like ('*'+$entryPoint+'* remote*')
+    }|Select-Object -First 1)
+    $remotePid=if($remote){[int]$remote.ProcessId}else{0}
+    $connected=$false
+    if($remotePid -gt 0){
+        $connected=@(
+            Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+            Where-Object { $_.OwningProcess -eq $remotePid -and $_.RemotePort -eq 443 }
+        ).Count -gt 0
+    }
+    if($connected){Write-Ready -RemotePid $remotePid}
+    else{Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue}
+    Start-Sleep -Seconds 2
+}
+Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+'@
+    $watcherEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($watcher))
 
     $lines=@(
         '@echo off',
@@ -216,6 +270,9 @@ try{
         'set "GIT_TERMINAL_PROMPT=0"',
         'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
         '"%SystemRoot%\\System32\\ping.exe" -n 2 127.0.0.1 >nul',
+        ('set "MULTICHAT_READY_PATH='+$(Escape-BatchValue $readyPath)+'"'),
+        ('set "MULTICHAT_ENTRY_POINT='+$(Escape-BatchValue ([string]$config.entryPoint))+'"'),
+        ('start "" /b "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand '+$watcherEncoded+' >nul 2>&1'),
         ('"'+$(Escape-BatchValue ([string]$config.nodePath))+'" "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" remote 1>"'+$(Escape-BatchValue $childStdout)+'" 2>"'+$(Escape-BatchValue $childStderr)+'"'),
         'set "rc=%errorlevel%"',
         'del /q "%USERPROFILE%\\.claude-server-commander\\claude_tool_call*.log" >nul 2>&1',
@@ -357,7 +414,7 @@ try{
                     }
                 }catch{}
             }
-            Remove-Item -LiteralPath $childStdout,$childStderr -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $childStdout,$childStderr,$readyPath -Force -ErrorAction SilentlyContinue
             $diagnostic=($diagnosticParts -join ' | ')
             if($diagnostic){
                 throw "Restricted Remote child exited unexpectedly (exit $exitCode). Diagnostic: $diagnostic"
@@ -388,7 +445,7 @@ try{
     if($job -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::CloseHandle($job)
     }
-    Remove-Item -LiteralPath $childStdout,$childStderr -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $childStdout,$childStderr,$readyPath -Force -ErrorAction SilentlyContinue
     if(-not $failed){
         try{Write-RestrictedRemoteStatus -State 'STOPPED' -LauncherPid $PID}catch{}
     }
