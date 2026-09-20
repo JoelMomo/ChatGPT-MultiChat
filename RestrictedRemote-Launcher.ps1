@@ -226,7 +226,7 @@ try{
     # the child runs as another user, so containment can be applied before any
     # Node code executes. This avoids cross-user OpenProcess access (Win32 5).
     $credentialName=[string]$credential.UserName
-    $slash=$credentialName.IndexOf('\\')
+    $slash=$credentialName.IndexOf('\')
     if($slash -gt 0){
         $logonDomain=$credentialName.Substring(0,$slash)
         $logonUser=$credentialName.Substring($slash+1)
