@@ -99,11 +99,19 @@ try{
         # Drain stdout/stderr continuously in memory so Desktop Commander cannot
         # block on a full pipe. Never persist or echo remote tool arguments/results.
         while($stdoutTask -and $stdoutTask.IsCompleted){
-            $null=$stdoutTask.Result
+            $line=$stdoutTask.Result
+            if($null -eq $line){
+                $stdoutTask=$null
+                break
+            }
             $stdoutTask=$node.StandardOutput.ReadLineAsync()
         }
         while($stderrTask -and $stderrTask.IsCompleted){
-            $null=$stderrTask.Result
+            $line=$stderrTask.Result
+            if($null -eq $line){
+                $stderrTask=$null
+                break
+            }
             $stderrTask=$node.StandardError.ReadLineAsync()
         }
 
