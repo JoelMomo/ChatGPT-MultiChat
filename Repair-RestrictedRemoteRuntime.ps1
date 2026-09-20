@@ -71,6 +71,20 @@ function Install-ReviewedRuntime {
     Invoke-IcaclsChecked @($runtimeBase,'/grant',('*'+$ownerSid+':(OI)(CI)RX'))
     Invoke-IcaclsChecked @($runtimeBase,'/grant',('*'+$RestrictedSid+':(OI)(CI)RX'))
 
+    if([string]::Equals(
+        [IO.Path]::GetFullPath([string]$Source.Root).TrimEnd('\'),
+        [IO.Path]::GetFullPath($target).TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase
+    )){
+        $lock=Join-Path $target 'package-lock.json'
+        $entry=Join-Path $target 'node_modules\@wonderwhy-er\desktop-commander\dist\index.js'
+        if(-not(Test-Path -LiteralPath $lock) -or -not(Test-Path -LiteralPath $entry)){
+            throw 'Existing Restricted Remote runtime is incomplete.'
+        }
+        Invoke-IcaclsChecked @($target,'/inheritance:e')
+        return [pscustomobject]@{Root=$target;EntryPoint=$entry}
+    }
+
     try{
         Copy-Item -LiteralPath $Source.Root -Destination $stage -Recurse -Force
         $lock=Join-Path $stage 'package-lock.json'
