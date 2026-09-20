@@ -187,6 +187,9 @@ try{
     $machinePath=[Environment]::GetEnvironmentVariable('Path','Machine')
     $machinePathExt=[Environment]::GetEnvironmentVariable('PATHEXT','Machine')
     $bootstrap=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.cmd'
+    $childStdout=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stdout.tmp'
+    $childStderr=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.stderr.tmp'
+    Remove-Item -LiteralPath $childStdout,$childStderr -Force -ErrorAction SilentlyContinue
 
     $lines=@(
         '@echo off',
@@ -213,7 +216,7 @@ try{
         'set "GIT_TERMINAL_PROMPT=0"',
         'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
         '"%SystemRoot%\\System32\\ping.exe" -n 2 127.0.0.1 >nul',
-        ('"'+$(Escape-BatchValue ([string]$config.nodePath))+'" "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" remote'),
+        ('"'+$(Escape-BatchValue ([string]$config.nodePath))+'" "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" remote 1>"'+$(Escape-BatchValue $childStdout)+'" 2>"'+$(Escape-BatchValue $childStderr)+'"'),
         'set "rc=%errorlevel%"',
         'del /q "%USERPROFILE%\\.claude-server-commander\\claude_tool_call*.log" >nul 2>&1',
         'del /q "%USERPROFILE%\\.claude-server-commander\\tool-history*.jsonl" >nul 2>&1',
@@ -339,7 +342,27 @@ try{
         if($wait -eq 0){
             [uint32]$exitCode=0
             [void][MultiChatRestrictedJob]::GetExitCodeProcess($childProcessHandle,[ref]$exitCode)
-            throw "Restricted Remote child exited unexpectedly (exit $exitCode)."
+
+            $diagnosticParts=New-Object Collections.Generic.List[string]
+            foreach($capture in @($childStderr,$childStdout)){
+                if(-not(Test-Path -LiteralPath $capture)){continue}
+                try{
+                    $tail=@(Get-Content -LiteralPath $capture -Tail 20 -ErrorAction Stop)
+                    if($tail.Count){
+                        $text=($tail -join ' ; ').Trim()
+                        $text=$text -replace '(?i)(authorization|bearer|token|secret|password)(\s*[:=]\s*)[^\s;]+','$1$2<redacted>'
+                        $text=$text -replace '[\r\n]+',' '
+                        if($text.Length -gt 1200){$text=$text.Substring(0,1200)+'...'}
+                        if($text){[void]$diagnosticParts.Add($text)}
+                    }
+                }catch{}
+            }
+            Remove-Item -LiteralPath $childStdout,$childStderr -Force -ErrorAction SilentlyContinue
+            $diagnostic=($diagnosticParts -join ' | ')
+            if($diagnostic){
+                throw "Restricted Remote child exited unexpectedly (exit $exitCode). Diagnostic: $diagnostic"
+            }
+            throw "Restricted Remote child exited unexpectedly (exit $exitCode) with no diagnostic output."
         }
         if($wait -ne 258){
             $win32Error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
@@ -365,6 +388,7 @@ try{
     if($job -ne [IntPtr]::Zero){
         [void][MultiChatRestrictedJob]::CloseHandle($job)
     }
+    Remove-Item -LiteralPath $childStdout,$childStderr -Force -ErrorAction SilentlyContinue
     if(-not $failed){
         try{Write-RestrictedRemoteStatus -State 'STOPPED' -LauncherPid $PID}catch{}
     }
