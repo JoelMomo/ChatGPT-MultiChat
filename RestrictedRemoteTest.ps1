@@ -92,6 +92,12 @@ if(Test-Path -LiteralPath $launcherPath){
     if($launcher -match '(?im)^\s*\$error\s*='){
         Add-RestrictedFailure 'Restricted launcher overwrites the reserved PowerShell Error automatic variable.'
     }
+    if($launcher.Contains('IndexOf(''\\'')')){
+        Add-RestrictedFailure 'Restricted launcher searches for two backslashes when splitting DOMAIN\user.'
+    }
+    if(-not $launcher.Contains('IndexOf(''\'')')){
+        Add-RestrictedFailure 'Restricted launcher does not split DOMAIN\user on a single backslash.'
+    }
 }
 if(Test-Path -LiteralPath $childPath){
     $child=[IO.File]::ReadAllText($childPath)
