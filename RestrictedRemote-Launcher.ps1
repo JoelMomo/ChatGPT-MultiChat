@@ -105,23 +105,84 @@ try{
     Write-RestrictedRemoteStatus -State 'STARTING' -LauncherPid $PID
     $job=[MultiChatRestrictedJob]::CreateKillOnCloseJob()
 
-    $arguments=@(
-        '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass',
-        '-File',$childScript,
-        '-ProfilePath',[string]$config.profilePath,
-        '-NodePath',[string]$config.nodePath,
-        '-EntryPoint',[string]$config.entryPoint,
-        '-ManagerRoot',$root
+    # PowerShell 5.1 cannot initialize when Start-Process -UseNewEnvironment
+    # omits SystemRoot (it fails with 8009001d). Keep the clean environment
+    # boundary, but bootstrap through native cmd.exe and explicitly construct
+    # the restricted environment before starting Node.
+    $systemRoot=[Environment]::GetEnvironmentVariable('SystemRoot','Machine')
+    if(-not $systemRoot){$systemRoot=$env:SystemRoot}
+    if(-not $systemRoot){throw 'SystemRoot is unavailable for Restricted Remote.'}
+    $systemDrive=[IO.Path]::GetPathRoot($systemRoot).TrimEnd('\\')
+    $cmdPath=Join-Path $systemRoot 'System32\\cmd.exe'
+    if(-not(Test-Path -LiteralPath $cmdPath)){throw 'cmd.exe is unavailable for Restricted Remote.'}
+
+    function Escape-BatchValue {
+        param([string]$Value)
+        if($null -eq $Value){return ''}
+        return $Value.Replace('%','%%').Replace('^','^^')
+    }
+
+    $profile=[IO.Path]::GetFullPath([string]$config.profilePath).TrimEnd('\\')
+    $localAppData=Join-Path $profile 'AppData\\Local'
+    $appData=Join-Path $profile 'AppData\\Roaming'
+    $temp=Join-Path $localAppData 'Temp'
+    $homeDrive=[IO.Path]::GetPathRoot($profile).TrimEnd('\\')
+    $homePath=$profile.Substring($homeDrive.Length)
+    $machinePath=[Environment]::GetEnvironmentVariable('Path','Machine')
+    $machinePathExt=[Environment]::GetEnvironmentVariable('PATHEXT','Machine')
+    $bootstrap=Join-Path ([string]$config.stateRoot) 'restricted-remote-child.cmd'
+
+    $lines=@(
+        '@echo off',
+        'setlocal',
+        ('set "SystemRoot='+$(Escape-BatchValue $systemRoot)+'"'),
+        ('set "windir='+$(Escape-BatchValue $systemRoot)+'"'),
+        ('set "SystemDrive='+$(Escape-BatchValue $systemDrive)+'"'),
+        ('set "ComSpec='+$(Escape-BatchValue $cmdPath)+'"'),
+        ('set "USERPROFILE='+$(Escape-BatchValue $profile)+'"'),
+        ('set "HOME='+$(Escape-BatchValue $profile)+'"'),
+        ('set "HOMEDRIVE='+$(Escape-BatchValue $homeDrive)+'"'),
+        ('set "HOMEPATH='+$(Escape-BatchValue $homePath)+'"'),
+        ('set "APPDATA='+$(Escape-BatchValue $appData)+'"'),
+        ('set "LOCALAPPDATA='+$(Escape-BatchValue $localAppData)+'"'),
+        ('set "TEMP='+$(Escape-BatchValue $temp)+'"'),
+        ('set "TMP='+$(Escape-BatchValue $temp)+'"'),
+        ('set "PATH='+$(Escape-BatchValue $machinePath)+'"'),
+        ('set "PATHEXT='+$(Escape-BatchValue $machinePathExt)+'"'),
+        'set "DC_REMOTE_DEVICE=true"',
+        'set "MULTICHAT_RESTRICTED_REMOTE=1"',
+        ('set "MULTICHAT_STATE_ROOT='+$(Escape-BatchValue ([string]$config.stateRoot))+'"'),
+        ('set "MULTICHAT_WORKSPACE_ROOT='+$(Escape-BatchValue ([string]$config.workspaceRoot))+'"'),
+        'set "GIT_CONFIG_NOSYSTEM=1"',
+        'set "GIT_TERMINAL_PROMPT=0"',
+        'if not exist "%TEMP%" mkdir "%TEMP%" >nul 2>&1',
+        '"%SystemRoot%\\System32\\timeout.exe" /t 1 /nobreak >nul',
+        ('"'+$(Escape-BatchValue ([string]$config.nodePath))+'" "'+$(Escape-BatchValue ([string]$config.entryPoint))+'" remote'),
+        'set "rc=%errorlevel%"',
+        'del /q "%USERPROFILE%\\.claude-server-commander\\claude_tool_call*.log" >nul 2>&1',
+        'del /q "%USERPROFILE%\\.claude-server-commander\\tool-history*.jsonl" >nul 2>&1',
+        'exit /b %rc%'
     )
-    $child=Start-Process powershell.exe `
-        -ArgumentList $arguments `
+    [IO.File]::WriteAllLines($bootstrap,$lines,(New-Object Text.UTF8Encoding($false)))
+
+    $child=Start-Process $cmdPath `
+        -ArgumentList @('/d','/c',('"'+$bootstrap+'"')) `
         -Credential $credential `
         -LoadUserProfile `
         -UseNewEnvironment `
         -WindowStyle Hidden `
         -PassThru
 
-    if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$child.Handle)){
+    try{
+        $handle=$child.Handle
+    }catch{
+        $exitCode=try{$child.ExitCode}catch{-1}
+        throw "Restricted Remote bootstrap exited before containment (exit $exitCode)."
+    }
+    if($handle -eq [IntPtr]::Zero){
+        throw 'Restricted Remote bootstrap did not expose a process handle.'
+    }
+    if(-not [MultiChatRestrictedJob]::AssignProcessToJobObject($job,$handle)){
         $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
         throw "Could not place Restricted Remote in its containment job (Win32 $error)."
